@@ -1,0 +1,179 @@
+# FoundationDB for Windows, macOS and Linux, and a cluster that reaches consensus on each.
+#
+# Why this exists. FoundationDB ships no Windows binaries: 7.3.76 carries deb, rpm, .so,
+# x86_64 and aarch64 assets and nothing else, and neither does any recent release. Upstream's
+# `windows-boost-test.yml` looks like it covers the gap and does not — its step is named
+# "Configure and Build" and runs only `cmake ..`.
+#
+# The toolchain here is not a guess. `SnowBankSDK/foundationdb-windows-build` built 6.3 and
+# 7.0 on Windows in 2022 with:
+#
+#     cmake -G "Visual Studio 16 2019" -A x64 -T ClangCL -DBOOST_ROOT=...
+#     msbuild /p:Configuration=Release foundationdb.sln
+#
+# `-T ClangCL` is the load-bearing part. A first attempt here used the default MSVC toolset
+# and drowned in errors that were not portability defects at all:
+#
+#   * `__PRETTY_FUNCTION__` in flow/Arena.h — a Clang and GCC builtin. MSVC has no such
+#     identifier; Clang compiles it.
+#   * `__attribute__((swift_attr(...)))` in DeterministicRandom.h on main — `__attribute__`
+#     is Clang syntax, and MSVC parses it as a redefined class.
+#
+# Both disappear under ClangCL, so the compiler choice was the bug, not the tree.
+#
+# Boost comes as one full port rather than the component list upstream's job uses. That list
+# is enough to *configure* and not to compile: the MSVC attempt failed on boost/format.hpp,
+# boost/asio.hpp and boost/lockfree/queue.hpp, none of which were in it.
+#
+# Linux is the control, not a courtesy. With the same CMake invocation green there, a Windows
+# failure is provably Windows-specific rather than a defect in how this workflow drives the
+# build. macOS is a second real deliverable, since the release assets carry no .pkg either.
+name: fdb portability
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [portability-consensus]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }} ${{ matrix.target }} (${{ matrix.ref }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+        ref: [release-7.3]
+        target: [fdb_c, fdbcli, fdbserver]
+        include:
+          # main rides along on Windows only, as a signal about which branch is healthier.
+          - os: windows-2025
+            ref: main
+            target: fdb_c
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: apple/foundationdb
+          ref: ${{ matrix.ref }}
+
+      - name: Dependencies (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: vcpkg install boost:x64-windows lz4:x64-windows
+
+      - name: Dependencies (macos)
+        if: runner.os == 'macOS'
+        run: brew install boost lz4 ninja || true
+
+      - name: Dependencies (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libboost-all-dev liblz4-dev ninja-build mono-devel || true
+
+      # One invocation, three platforms. Only the toolset and the toolchain file differ.
+      - name: Configure
+        shell: bash
+        run: |
+          mkdir -p build && cd build
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA="-T ClangCL -A x64 -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          fi
+          cmake .. $EXTRA \
+            -DCMAKE_BUILD_TYPE=Release -DWITH_SWIFT=OFF -DBUILD_TESTING=OFF \
+            -DBUILD_DOCUMENTATION=OFF -DWITH_CSHARP=OFF -DWITH_PYTHON_BINDING=OFF \
+            -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF \
+            -DWITH_TLS=OFF 2>&1 | tee configure.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Build ${{ matrix.target }}
+        shell: bash
+        run: |
+          cd build
+          set +e
+          cmake --build . --target ${{ matrix.target }} --config Release --parallel 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          echo "=== first 80 diagnostics ==="
+          grep -iE "error|fatal error|cannot open|no such file" build.log | head -80
+          exit $rc
+
+      # A diagnostic must never skip the step it explains. One already did.
+      - name: Logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-${{ matrix.os }}-${{ matrix.ref }}-${{ matrix.target }}
+          path: |
+            build/build.log
+            build/configure.log
+          if-no-files-found: warn
+
+      - name: Binaries
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.os }}-${{ matrix.ref }}-${{ matrix.target }}
+          path: |
+            build/**/fdbserver
+            build/**/fdbcli
+            build/**/*.exe
+            build/**/libfdb_c.so
+            build/**/libfdb_c.dylib
+            build/**/fdb_c.dll
+          if-no-files-found: warn
+
+  # The acceptance test. Three processes on distinct zones, three coordinators. One
+  # coordinator has no quorum, and two is worse than one because losing either loses the
+  # cluster. Three is the minimum that tolerates a loss, and it is what was verified by hand
+  # on Linux against 7.3.76: `Fault Tolerance - 1 zones`, where `single` reports 0.
+  consensus:
+    name: consensus on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-${{ matrix.os }}-release-7.3-fdb*
+          merge-multiple: true
+          path: bin
+
+      - name: Start three processes and assert fault tolerance
+        shell: bash
+        run: |
+          set -eu
+          chmod +x bin/* 2>/dev/null || true
+          SERVER=$(find bin -name 'fdbserver*' -type f | head -1)
+          CLI=$(find bin -name 'fdbcli*' -type f | head -1)
+          ROOT="$PWD/fdbrun"; mkdir -p "$ROOT/logs" "$ROOT/d1" "$ROOT/d2" "$ROOT/d3"
+          CF="$ROOT/fdb.cluster"
+          printf 'weft3:weft3@127.0.0.1:4691,127.0.0.1:4692,127.0.0.1:4693' > "$CF"
+          for i in 1 2 3; do
+            "$SERVER" -p "127.0.0.1:469$i" -C "$CF" -d "$ROOT/d$i" -L "$ROOT/logs" \
+              --locality-machineid "m$i" --locality-zoneid "z$i" &
+          done
+          sleep 10
+          "$CLI" -C "$CF" --exec 'configure new double ssd' --timeout 120
+          for _ in $(seq 1 40); do
+            "$CLI" -C "$CF" --exec 'status minimal' --timeout 30 | grep -q 'The database is available' && break
+            sleep 5
+          done
+          STATUS=$("$CLI" -C "$CF" --exec 'status' --timeout 30)
+          echo "$STATUS"
+          echo "$STATUS" | grep -qE 'Coordinators +- +3' || { echo "not three coordinators"; exit 1; }
+          echo "$STATUS" | grep -qE 'Fault Tolerance +- +1 zones' || { echo "no fault tolerance: not consensus"; exit 1; }
+          echo "consensus reached on ${{ matrix.os }}"
