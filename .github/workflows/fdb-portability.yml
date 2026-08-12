@@ -1,4 +1,4 @@
-# FoundationDB for Linux, macOS and Windows: build the chain, then package it.
+# FoundationDB for Windows, with Linux as the control: build the chain, then package it.
 #
 # Why this exists. FoundationDB supplies no Windows binaries — 7.3.76 carries deb, rpm,
 # .so, x86_64 and aarch64 assets and nothing else, and no recent release differs. Upstream's
@@ -42,7 +42,10 @@
 #             So: the Visual Studio generator with `-T ClangCL`, which is still clang-cl and
 #             so still satisfies the rule above. Do not "simplify" this back to Ninja.
 #
-# Packaging is fpm on Linux and macOS, and FoundationDB's own WiX MSI on Windows —
+# macOS is out of the matrix for now. It was the one green platform and it proves nothing that
+# is in question: the port that has to be shown is Windows, and Linux is the control for it.
+#
+# Packaging is fpm on Linux and FoundationDB's own WiX MSI on Windows —
 # packaging/msi/ already holds FDBInstaller.wxs and cmake/FindWIX.cmake. That target chain
 # needs python_binding, so no job disables it.
 name: fdb portability
@@ -77,18 +80,13 @@ jobs:
             runner: ubuntu-24.04
             container: foundationdb/build:rockylinux9-latest
             fdbserver_jobs: 3
-          - os: macos
-            runner: macos-14
-            container: ""
-            fdbserver_jobs: 3
           - os: windows
             runner: windows-2025
             container: ""
             fdbserver_jobs: 4
 
     env:
-      # vcpkg builds Boost from source, which is the slowest step on Windows by far. A
-      # binary cache makes the second run minutes instead of an hour.
+      # A binary cache, so a second run reuses what the first one built.
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
 
     steps:
@@ -106,42 +104,68 @@ jobs:
         if: matrix.os != 'linux'
         run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
 
-      - name: Dependencies (macos)
-        if: matrix.os == 'macos'
-        run: brew install boost lz4 fmt jemalloc ninja autoconf automake libtool || true
-
       - name: Cache vcpkg binaries (windows)
         if: matrix.os == 'windows'
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg-cache
-          key: vcpkg-windows-boost-lz4-fmt-v1
+          key: vcpkg-windows-lz4-fmt-v2
 
-      # The exact components, not the whole Boost meta-port. This list is
-      # lattice-world-weft/weft-warp-loop's vcpkg.json, which is known to build FoundationDB's
-      # flow runtime on Windows. `boost:x64-windows` pulls all of Boost 1.91, and one run died
-      # on `curl error 35 (SSL connect error)` fetching a LICENSE file — vcpkg calls error 35
-      # non-transient and gives up. A smaller set is a smaller surface to flake on.
-      #
-      # boost-context is excluded on Windows, per that same manifest.
+      # lz4 and fmt only. Boost comes from the step below rather than from vcpkg, for a reason
+      # worth stating: vcpkg installs Boost 1.91, and Boost removed `boost::asio::io_service`
+      # in 1.87. `flow/IThreadPool.cpp` in release-7.3 still uses it, so `flow` failed with
+      # "no type named 'io_service' in namespace 'boost::asio'" after configure had already
+      # succeeded. The version was never the problem the earlier vcpkg list was solving.
       - name: Dependencies (windows)
         if: matrix.os == 'windows'
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            vcpkg install \
-              boost-asio:x64-windows boost-bind:x64-windows boost-algorithm:x64-windows \
-              boost-format:x64-windows boost-core:x64-windows boost-unordered:x64-windows \
-              boost-container:x64-windows boost-preprocessor:x64-windows \
-              boost-filesystem:x64-windows boost-iostreams:x64-windows \
-              boost-serialization:x64-windows boost-program-options:x64-windows \
-              boost-url:x64-windows boost-random:x64-windows boost-range:x64-windows \
-              boost-intrusive:x64-windows boost-lockfree:x64-windows \
-              boost-system:x64-windows boost-lexical-cast:x64-windows \
-              boost-functional:x64-windows lz4:x64-windows fmt:x64-windows && exit 0
+            vcpkg install lz4:x64-windows fmt:x64-windows && exit 0
             echo "::warning::vcpkg attempt $attempt failed; retrying"
           done
           exit 1
+
+      # FoundationDB builds its own Boost everywhere except Windows. `cmake/CompileBoost.cmake`
+      # pins 1.78.0, and its `compile_boost` runs `./bootstrap.sh` and `./b2` with -fPIC, which
+      # is POSIX-only. The Windows branch above it has no such fallback:
+      #
+      #     if(WIN32) find_package(Boost 1.78 COMPONENTS ...) ... return()
+      #     elseif(WIN32) message(FATAL_ERROR "Could not find Boost")
+      #
+      # So Windows has to be handed a Boost, and this hands it the same 1.78.0 from the same
+      # URL and hash CompileBoost.cmake names, so the platforms agree on the version rather
+      # than on whatever a package manager happens to ship this month.
+      #
+      # Built with msvc rather than clang-win: the static libraries are ABI-compatible with
+      # clang-cl either way, and Boost 1.78 is four years older than the clang on this runner.
+      - name: Cache Boost (windows)
+        if: matrix.os == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/boost-install
+          key: boost-1.78.0-msvc-x64-static-v1
+
+      - name: Boost 1.78 (windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="${{ github.workspace }}/boost-install"
+          if [ -d "$PREFIX/include" ]; then echo "boost already cached at $PREFIX"; exit 0; fi
+          curl -fsSL -o boost.tar.bz2 \
+            "https://archives.boost.io/release/1.78.0/source/boost_1_78_0.tar.bz2"
+          echo "8681f175d4bdb26c52222665793eef08490d7758529330f98d3b29dd0735bccc  boost.tar.bz2" \
+            | sha256sum -c -
+          tar xf boost.tar.bz2
+          cd boost_1_78_0
+          cmd.exe //c bootstrap.bat
+          ./b2.exe -j4 toolset=msvc address-model=64 variant=release \
+            link=static runtime-link=shared \
+            --with-filesystem --with-iostreams --with-serialization --with-system --with-context \
+            -s NO_BZIP2=1 -s NO_LZMA=1 -s NO_ZSTD=1 \
+            --prefix="$PREFIX" install
+          ls "$PREFIX/lib" | head -20
 
       # What the runner has, so a kill by the OOM killer is read as one rather than guessed
       # at. The Linux job died at exit 137 partway through fdbserver with no other evidence.
@@ -159,14 +183,19 @@ jobs:
           COMMON="-DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
                   -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF"
           if [ "${{ matrix.os }}" = windows ]; then
-            # -T ClangCL is clang-cl. The generator is Visual Studio because CMake enables
-            # the CSharp language nowhere else, and FDB's actor compiler is written in C#.
-            cmake -S . -B build $COMMON -G "Visual Studio 17 2022" -A x64 -T ClangCL \
+            # No -G. CMake's default on Windows is the newest installed Visual Studio, which
+            # is what is wanted and what naming one is not: this runner ships Visual Studio
+            # 18, so "Visual Studio 17 2022" named a generator that is not installed. The
+            # generator has to be Visual Studio at all because CMake enables the CSharp
+            # language nowhere else, and FDB's actor compiler is written in C#.
+            #
+            # -T ClangCL is still clang-cl, which is the load-bearing part: flow uses GNU
+            # __attribute__ syntax and has never compiled under cl.exe.
+            cmake -S . -B build $COMMON -A x64 -T ClangCL \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+              -DBOOST_ROOT="${{ github.workspace }}/boost-install" \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
-          elif [ "${{ matrix.os }}" = macos ]; then
-            cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
+            grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           else
             # RocksDB off, as it already is on the other two. It is 340 targets that build
             # before fdbserver starts, and a control configured unlike the platforms it is
@@ -211,8 +240,10 @@ jobs:
         shell: bash
         run: |
           set +e
+          # GNU time only. BSD `time` on the macOS runner has no -v and fails the step, which
+          # it did.
           TIME=""
-          [ -x /usr/bin/time ] && TIME="/usr/bin/time -v"
+          [ "${{ matrix.os }}" = linux ] && [ -x /usr/bin/time ] && TIME="/usr/bin/time -v"
           $TIME cmake --build build --config Release --target fdbserver \
             --parallel ${{ matrix.fdbserver_jobs }} 2>&1 | tee build-fdbserver.log
           rc=${PIPESTATUS[0]}
@@ -220,8 +251,8 @@ jobs:
           grep -E "Maximum resident set size" build-fdbserver.log || true
           exit $rc
 
-      - name: Package (fpm, linux and macos)
-        if: matrix.os != 'windows'
+      - name: Package (fpm, linux)
+        if: matrix.os == 'linux'
         shell: bash
         run: |
           set -eu
