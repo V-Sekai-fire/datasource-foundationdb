@@ -120,6 +120,10 @@
               <Component Id='FDBCLibraryHeader' Guid='{32D846FA-3BA8-4CF6-8777-51DFA1011198}' Win64='yes'>
                 <File Id='FDBCH' Name='fdb_c.h' DiskId='1' Source='$(var.SolutionRoot)bindings\c\foundationdb\fdb_c.h' KeyPath='yes'/>
                 <File Id='FDBCOPTIONSH' Name='fdb_c_options.g.h' DiskId='1' Source='$(var.BuildRoot)bindings\c\foundationdb\fdb_c_options.g.h'/>
+                <!-- fdb_c.h includes both of these, so neither is optional. Matches the
+                     five files bindings/c/CMakeLists.txt:528 installs on Linux and macOS. -->
+                <File Id='FDBCAPIVERSIONH' Name='fdb_c_apiversion.g.h' DiskId='1' Source='$(var.BuildRoot)bindings\c\foundationdb\fdb_c_apiversion.g.h'/>
+                <File Id='FDBCTYPESH' Name='fdb_c_types.h' DiskId='1' Source='$(var.SolutionRoot)bindings\c\foundationdb\fdb_c_types.h'/>
                 <File Id='FDBOPTIONSFILE' Name='fdb.options' DiskId='1' Source='$(var.SolutionRoot)fdbclient\vexillographer\fdb.options'/>
               </Component>
             </Directory>
