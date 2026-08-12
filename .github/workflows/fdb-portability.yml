@@ -313,16 +313,37 @@ jobs:
           done
           ls -l *.deb *.rpm *.pkg 2>/dev/null || true
 
+      # The target is `installer`, not `MSI`. There is no target named MSI anywhere in the
+      # tree — packaging/msi/CMakeLists.txt:53 is `add_custom_target(installer ...)`, and the
+      # only other name here is the aggregate `packages` from FDBComponents.cmake:231. The
+      # earlier `--target MSI` would have failed at packaging however well the build went.
+      #
+      # WiX is found, and not where this step used to look. cmake/FindWIX.cmake resolves
+      # candle and light through `$ENV{WIX}` rather than a versioned path, and the runner's
+      # configure log already says: Found WIX: C:/Program Files (x86)/WiX Toolset
+      # v3.14/bin/candle.exe. The old probe tested for v3.11 and would have warned about a
+      # WiX that was present all along, so it checks $WIX now — the variable FindWIX uses.
+      #
+      # No `|| true` anywhere in here. An MSI that silently does not get built is the exact
+      # outcome this job exists to detect.
+      #
+      # `installer` pulls in fdbmonitor, fdbbackup and python_binding on top of the three
+      # targets built above (packaging/msi/CMakeLists.txt:30), so this step builds them.
+      # It writes build/packages/foundationdb-<version>-SNAPSHOT-x64.msi, which the
+      # `build/**/*.msi` line in the upload glob already covers.
       - name: Package (MSI, windows)
         if: matrix.os == 'windows'
         shell: bash
         run: |
           set +e
-          ls "/c/Program Files (x86)/WiX Toolset v3.11/bin" >/dev/null 2>&1 \
-            || echo "::warning::no WiX toolset found; the MSI target may not exist"
-          cmake --build build --config Release --target MSI --parallel 2>&1 | tee msi.log
-          rc=$?
+          [ -n "$WIX" ] || echo "::warning::WIX env var unset; FindWIX resolves candle/light through it"
+          cmake --build build --config Release --target installer --parallel 2>&1 | tee msi.log
+          rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|WIX|No rule to make target" msi.log | head -30
+          echo "=== msi produced ==="
+          find build -name '*.msi' -print -o -name 'packages' -type d -print | head
+          [ "$rc" -eq 0 ] && [ -z "$(find build -name '*.msi' -print -quit)" ] && {
+            echo "::error::installer target succeeded but produced no .msi"; rc=1; }
           exit $rc
 
       - name: Logs
