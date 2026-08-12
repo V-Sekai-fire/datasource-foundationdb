@@ -19,6 +19,7 @@
  */
 
 #include "fdbserver/RocksDBCheckpointUtils.actor.h"
+#include <chrono>
 
 #ifdef SSD_ROCKSDB_EXPERIMENTAL
 #include <rocksdb/db.h>

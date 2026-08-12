@@ -63,9 +63,6 @@ concurrency:
   group: fdb-portability-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FDB_REF: release-7.3
-
 jobs:
   build:
     name: ${{ matrix.os }}
@@ -90,10 +87,18 @@ jobs:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
 
     steps:
+      # This fork, not apple/foundationdb. The port needs to carry source fixes, and a build
+      # of someone else's checkout cannot: `flow/Trace.cpp` uses std::chrono::system_clock
+      # without including <chrono>, which compiles on Linux and macOS only because libstdc++
+      # and libc++ happen to pull the header in transitively. MSVC's STL does not, so
+      # clang-cl on Windows fails with "no type named 'system_clock' in namespace
+      # 'std::chrono'" — a real portability defect in FDB rather than anything about this
+      # workflow, and one that cannot be fixed from the CI file.
+      #
+      # Building this branch is equivalent to building upstream: it is origin/release-7.3
+      # with commits that, before this one, touched only this file. The Windows fixes land
+      # here as ordinary source commits and stay reviewable as a diff against release-7.3.
       - uses: actions/checkout@v5
-        with:
-          repository: apple/foundationdb
-          ref: ${{ env.FDB_REF }}
 
       - uses: actions/setup-python@v5
         if: matrix.os != 'linux'

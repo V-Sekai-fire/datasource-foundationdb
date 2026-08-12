@@ -19,6 +19,7 @@
  */
 
 #include "fdbclient/CommitTransaction.h"
+#include <chrono>
 #include "fdbclient/FDBTypes.h"
 #include "fdbclient/Tuple.h"
 #include "fdbrpc/DDSketch.h"

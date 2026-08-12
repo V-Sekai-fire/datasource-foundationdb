@@ -19,6 +19,7 @@
  */
 
 #include "flow/flow.h"
+#include <chrono>
 #include "flow/singleton.h"
 #include "flow/IAsyncFile.h"
 #include "fdbclient/ActorLineageProfiler.h"

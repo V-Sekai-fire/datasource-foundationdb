@@ -20,6 +20,7 @@
 
 #define FDB_USE_LATEST_API_VERSION
 #include <foundationdb/fdb_c.h>
+#include <chrono>
 
 #include "unit/fdb_api.hpp"
 

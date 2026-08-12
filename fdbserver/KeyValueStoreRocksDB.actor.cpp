@@ -19,6 +19,7 @@
  */
 
 #include "fdbclient/FDBTypes.h"
+#include <chrono>
 #ifdef SSD_ROCKSDB_EXPERIMENTAL
 
 #include <rocksdb/c.h>

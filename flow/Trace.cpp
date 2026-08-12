@@ -19,6 +19,7 @@
  */
 
 #include "flow/Trace.h"
+#include <chrono>
 #include "flow/FileTraceLogWriter.h"
 #include "flow/Knobs.h"
 #include "flow/XmlTraceLogFormatter.h"
