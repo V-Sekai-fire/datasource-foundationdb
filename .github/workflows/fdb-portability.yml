@@ -1,31 +1,37 @@
-# FoundationDB for Linux, macOS and Windows: build, package, and reach consensus on each.
+# FoundationDB for Linux, macOS and Windows: build the chain, then package it.
 #
-# Why this exists. FoundationDB ships no Windows binaries — 7.3.76 carries deb, rpm, .so,
-# x86_64 and aarch64 assets and nothing else, and no recent release differs. Upstream's
+# Why this exists. FoundationDB supplies no Windows binaries — 7.3.76 carries deb, rpm,
+# .so, x86_64 and aarch64 assets and nothing else, and no recent release differs. Upstream's
 # `windows-boost-test.yml` looks like it covers the gap and does not: its step is named
 # "Configure and Build" and runs only `cmake ..`.
 #
-# Each platform's recipe comes from a source that already works, not from guessing. Four
-# rounds were lost discovering dependencies one at a time (jemalloc, then fmt, then...)
-# before reading what already existed:
+# One job per platform, not one per target. The first version used a target matrix, and it
+# was wrong twice over: three Windows jobs each spent forty minutes building the same Boost,
+# and each rebuilt the whole of `flow` from scratch to reach its own target. Here the
+# dependencies install once, `flow` compiles once, and the targets chain in one build tree:
+#
+#     fdb_c -> fdbcli -> fdbserver -> package
+#
+# The order is the point. `fdbserver` is the only target that decides anything: a green
+# `fdb_c` and `fdbcli` with a red `fdbserver` is a client-only Windows, which has already
+# been ruled insufficient. Chaining them means a failure names the first thing that broke,
+# and nothing downstream runs to muddy it.
+#
+# Recipes come from sources that already work, not from guessing:
 #
 #   linux   — the official build image. README.md: "The official docker image for building
-#             is foundationdb/build which has all dependencies installed." Running in it
-#             makes this column a reliable control instead of a second thing to debug.
+#             is foundationdb/build which has all dependencies installed." Four rounds were
+#             lost finding jemalloc, then fmt, one at a time, before reading that sentence.
+#             Linux is the control: until it is green, a red Windows job is ambiguous.
 #   windows — lattice-world-weft/weft-warp-loop's flow-runtime.yml, which builds
 #             FoundationDB's flow/ runtime green on windows-latest. Its comment gives the
 #             rule: "flow uses GNU __attribute__ syntax throughout and has never compiled
-#             under plain MSVC cl.exe - upstream FDB builds Windows with clang." Hence
-#             Ninja + clang-cl + msvc-dev-cmd, not the default MSVC toolset.
-#   macos   — brew, with the same dependency set the other two need.
+#             under plain MSVC cl.exe - upstream FDB builds Windows with clang." Hence Ninja
+#             and clang-cl, with msvc-dev-cmd for the environment clang-cl needs.
 #
-# Linux is the control. Until it is green, a red Windows job is ambiguous: it could be the
-# platform or it could be this file.
-#
-# Packaging: fpm for Linux and macOS, and FoundationDB's own WiX MSI for Windows —
-# packaging/msi/ has FDBInstaller.wxs and cmake/FindWIX.cmake already, so the installer is
-# in-tree and only needs WiX present. Note its target chain depends on python_binding, so
-# that binding stays on for Windows.
+# Packaging is fpm on Linux and macOS, and FoundationDB's own WiX MSI on Windows —
+# packaging/msi/ already holds FDBInstaller.wxs and cmake/FindWIX.cmake. That target chain
+# needs python_binding, so no job disables it.
 name: fdb portability
 
 on:
@@ -36,185 +42,134 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes an older run rather than racing it for runners.
+concurrency:
+  group: fdb-portability-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FDB_REF: release-7.3
 
 jobs:
-  linux:
-    name: linux ${{ matrix.target }}
-    runs-on: ubuntu-24.04
-    # Every dependency already installed, by the people who build this for a living.
-    container: foundationdb/build:rockylinux9-latest
-    timeout-minutes: 180
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
-        target: [fdb_c, fdbcli, fdbserver]
+        include:
+          - os: linux
+            runner: ubuntu-24.04
+            container: foundationdb/build:rockylinux9-latest
+          - os: macos
+            runner: macos-14
+            container: ""
+          - os: windows
+            runner: windows-2025
+            container: ""
+
+    env:
+      # vcpkg builds Boost from source, which is the slowest step on Windows by far. A
+      # binary cache makes the second run minutes instead of an hour.
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
+
     steps:
       - uses: actions/checkout@v5
         with:
           repository: apple/foundationdb
           ref: ${{ env.FDB_REF }}
 
-      - name: Configure
-        run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF \
-            -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF \
-            2>&1 | tee configure.log
-
-      - name: Build
-        run: |
-          set +e
-          cmake --build build --target ${{ matrix.target }} --parallel 2>&1 | tee build.log
-          rc=${PIPESTATUS[0]}
-          echo "=== first 60 diagnostics ==="
-          grep -iE "error|fatal|Could NOT find" build.log | head -60
-          exit $rc
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        continue-on-error: true
-        with:
-          name: log-linux-${{ matrix.target }}
-          path: "*.log"
-          if-no-files-found: warn
-
-      - uses: actions/upload-artifact@v4
-        if: success()
-        continue-on-error: true
-        with:
-          name: bin-linux-${{ matrix.target }}
-          path: |
-            build/bin/*
-            build/lib/libfdb_c.so
-          if-no-files-found: warn
-
-  macos:
-    name: macos ${{ matrix.target }}
-    runs-on: macos-14
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [fdb_c, fdbcli, fdbserver]
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: apple/foundationdb
-          ref: ${{ env.FDB_REF }}
       - uses: actions/setup-python@v5
+        if: matrix.os != 'linux'
         with: { python-version: "3.12" }
-      - run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
-      - run: brew install boost lz4 fmt jemalloc ninja autoconf automake libtool || true
-      - name: Configure
-        run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF \
-            -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF \
-            -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
-      - name: Build
-        run: |
-          set +e
-          cmake --build build --target ${{ matrix.target }} --parallel 2>&1 | tee build.log
-          rc=${PIPESTATUS[0]}
-          grep -iE "error|fatal|Could NOT find" build.log | head -60
-          exit $rc
-      - uses: actions/upload-artifact@v4
-        if: always()
-        continue-on-error: true
-        with: { name: "log-macos-${{ matrix.target }}", path: "*.log", if-no-files-found: warn }
-      - uses: actions/upload-artifact@v4
-        if: success()
-        continue-on-error: true
-        with:
-          name: bin-macos-${{ matrix.target }}
-          path: |
-            build/bin/*
-            build/lib/libfdb_c.dylib
-          if-no-files-found: warn
 
-  windows:
-    name: windows ${{ matrix.target }}
-    runs-on: windows-2025
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [fdb_c, fdbcli, fdbserver]
-    steps:
-      - uses: actions/checkout@v5
+      # ProtocolVersion.h is generated by protocol_version.py, which imports Jinja2.
+      - name: Jinja2 for ProtocolVersion.h codegen
+        if: matrix.os != 'linux'
+        run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
+
+      - name: Dependencies (macos)
+        if: matrix.os == 'macos'
+        run: brew install boost lz4 fmt jemalloc ninja autoconf automake libtool || true
+
+      - name: Cache vcpkg binaries (windows)
+        if: matrix.os == 'windows'
+        uses: actions/cache@v4
         with:
-          repository: apple/foundationdb
-          ref: ${{ env.FDB_REF }}
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
-      - name: vcpkg
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-windows-boost-lz4-fmt-v1
+
+      - name: Dependencies (windows)
+        if: matrix.os == 'windows'
         shell: bash
         run: vcpkg install boost:x64-windows lz4:x64-windows fmt:x64-windows
+
       # clang-cl needs the MSVC environment to find the STL and the linker.
-      - uses: ilammy/msvc-dev-cmd@v1
+      - name: MSVC environment (windows)
+        if: matrix.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
         shell: bash
         run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF \
-            -DWITH_SWIFT=OFF -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF \
-            -DWITH_RUBY_BINDING=OFF -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF \
-            2>&1 | tee configure.log
-      - name: Build
+          set -o pipefail
+          COMMON="-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+                  -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF -DWITH_JAVA_BINDING=OFF
+                  -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF"
+          if [ "${{ matrix.os }}" = windows ]; then
+            cmake -S . -B build $COMMON \
+              -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
+              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
+          elif [ "${{ matrix.os }}" = macos ]; then
+            cmake -S . -B build $COMMON \
+              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
+          else
+            cmake -S . -B build $COMMON 2>&1 | tee configure.log
+          fi
+
+      # The chain. Each step stops the job, so a failure names the first thing that broke.
+      - name: Build fdb_c
         shell: bash
         run: |
           set +e
-          cmake --build build --target ${{ matrix.target }} --parallel 2>&1 | tee build.log
+          cmake --build build --target fdb_c --parallel 2>&1 | tee build-fdb_c.log
           rc=${PIPESTATUS[0]}
           echo "=== first 60 diagnostics ==="
-          grep -iE "error|fatal|cannot open|Could NOT find" build.log | head -60
+          grep -iE "error|fatal|Could NOT find|cannot open" build-fdb_c.log | head -60
           exit $rc
-      - uses: actions/upload-artifact@v4
-        if: always()
-        continue-on-error: true
-        with: { name: "log-windows-${{ matrix.target }}", path: "*.log", if-no-files-found: warn }
-      - uses: actions/upload-artifact@v4
-        if: success()
-        continue-on-error: true
-        with:
-          name: bin-windows-${{ matrix.target }}
-          path: |
-            build/**/*.exe
-            build/**/fdb_c.dll
-            build/**/fdb_c.lib
-          if-no-files-found: warn
 
-  # fpm for Linux and macOS. Packaging is deliberately its own job: a build that compiles
-  # but cannot be installed is still a result worth seeing separately from one that cannot
-  # compile at all.
-  package-fpm:
-    name: package ${{ matrix.os }} (fpm)
-    needs: [linux, macos]
-    if: always()
-    runs-on: ${{ matrix.os == 'linux' && 'ubuntu-24.04' || 'macos-14' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [linux, macos]
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: bin-${{ matrix.os }}-*
-          merge-multiple: true
-          path: stage/usr/bin
-      - uses: ruby/setup-ruby@v1
-        with: { ruby-version: "3.3" }
-      - run: gem install --no-document fpm
-      - name: Build packages
+      - name: Build fdbcli
+        shell: bash
+        run: |
+          set +e
+          cmake --build build --target fdbcli --parallel 2>&1 | tee build-fdbcli.log
+          rc=${PIPESTATUS[0]}
+          grep -iE "error|fatal|Could NOT find|cannot open" build-fdbcli.log | head -60
+          exit $rc
+
+      # The one that decides. Everything above is a client.
+      - name: Build fdbserver
+        shell: bash
+        run: |
+          set +e
+          cmake --build build --target fdbserver --parallel 2>&1 | tee build-fdbserver.log
+          rc=${PIPESTATUS[0]}
+          grep -iE "error|fatal|Could NOT find|cannot open" build-fdbserver.log | head -60
+          exit $rc
+
+      - name: Package (fpm, linux and macos)
+        if: matrix.os != 'windows'
+        shell: bash
         run: |
           set -eu
-          ls -R stage | head -20
-          chmod +x stage/usr/bin/* 2>/dev/null || true
+          command -v gem >/dev/null && gem install --no-document fpm || {
+            echo "::warning::no ruby; cannot run fpm"; exit 0; }
+          mkdir -p stage/usr/bin stage/usr/lib
+          cp build/bin/fdbserver build/bin/fdbcli stage/usr/bin/ 2>/dev/null || true
+          cp build/lib/libfdb_c.* stage/usr/lib/ 2>/dev/null || true
           T=$([ "${{ matrix.os }}" = linux ] && echo "deb rpm" || echo "osxpkg")
           for t in $T; do
             fpm -s dir -t "$t" -n foundationdb-portability -v 7.3.76 \
@@ -222,67 +177,43 @@ jobs:
               -C stage . || echo "::warning::fpm $t failed"
           done
           ls -l *.deb *.rpm *.pkg 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: pkg-${{ matrix.os }}
-          path: |
-            *.deb
-            *.rpm
-            *.pkg
-          if-no-files-found: warn
 
-  # Windows gets FoundationDB's own installer rather than a hand-rolled one: packaging/msi
-  # already holds FDBInstaller.wxs and cmake/FindWIX.cmake. Its target chain depends on
-  # fdbserver, fdbcli, fdbmonitor, fdb_c, fdbbackup and python_binding, so unlike the build
-  # jobs above this one leaves the python binding enabled.
-  package-msi:
-    name: package windows (msi)
-    needs: [windows]
-    if: always()
-    runs-on: windows-2025
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: apple/foundationdb
-          ref: ${{ env.FDB_REF }}
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
-      - shell: bash
-        run: vcpkg install boost:x64-windows lz4:x64-windows fmt:x64-windows
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Find WiX
-        shell: bash
-        run: |
-          ls "/c/Program Files (x86)/WiX Toolset v3.11/bin" 2>/dev/null && echo "WiX 3.11 present" \
-            || echo "::warning::no WiX toolset found; the MSI target will not be generated"
-      - name: Configure with the installer enabled
-        shell: bash
-        run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF \
-            -DWITH_SWIFT=OFF -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF \
-            -DWITH_RUBY_BINDING=OFF -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF \
-            2>&1 | tee configure.log
-      - name: Build the MSI
+      - name: Package (MSI, windows)
+        if: matrix.os == 'windows'
         shell: bash
         run: |
           set +e
+          ls "/c/Program Files (x86)/WiX Toolset v3.11/bin" >/dev/null 2>&1 \
+            || echo "::warning::no WiX toolset found; the MSI target may not exist"
           cmake --build build --target MSI --parallel 2>&1 | tee msi.log
-          rc=${PIPESTATUS[0]}
-          grep -iE "error|fatal|cannot open|Could NOT find|WIX" msi.log | head -40
+          rc=$?
+          grep -iE "error|fatal|WIX|No rule to make target" msi.log | head -30
           exit $rc
-      - uses: actions/upload-artifact@v4
+
+      - name: Logs
         if: always()
         continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
-          name: pkg-windows-msi
+          name: log-${{ matrix.os }}
+          path: "*.log"
+          if-no-files-found: warn
+
+      - name: Binaries and packages
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.os }}
           path: |
+            build/bin/fdbserver
+            build/bin/fdbcli
+            build/lib/libfdb_c.so
+            build/lib/libfdb_c.dylib
+            build/**/*.exe
+            build/**/fdb_c.dll
             build/**/*.msi
-            msi.log
-            configure.log
+            *.deb
+            *.rpm
+            *.pkg
           if-no-files-found: warn
