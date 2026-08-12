@@ -209,11 +209,35 @@ jobs:
             #
             # -T ClangCL is still clang-cl, which is the load-bearing part: flow uses GNU
             # __attribute__ syntax and has never compiled under cl.exe.
+            # -DBoost_COMPILER=vc143 is what makes the prebuilt Boost usable, and it is not
+            # cosmetic: without it configure reaches `Generating` and then dies at
+            # cmake/CompileBoost.cmake:156 with 'The link interface of target "boost_target"
+            # contains Boost::filesystem but the target was not found'. That message names
+            # the symptom two steps downstream of the cause. The cause is one STATUS line
+            # above it:
+            #
+            #     Could NOT find Boost: missing: filesystem iostreams serialization system
+            #       (found .../BoostConfig.cmake, suitable version "1.86.0")
+            #
+            # The config is found; every component is skipped. BoostDetectToolset-1.86.0.cmake
+            # reads CMAKE_CXX_COMPILER_ID "Clang" with MSVC_VERSION set and concludes the
+            # toolset is `clangw<N>`, so each libboost_*-variant-vc143-*.cmake skips itself.
+            # Its own skip reason says what to do: "vc143, detected clangw22, set
+            # Boost_COMPILER to override". clang-cl targets the MSVC ABI, which is why
+            # overriding it is sound rather than a workaround.
+            #
+            # Reproduced and fixed locally before this was pushed, driving the same clang-cl
+            # over the same Boost with Ninja: without the flag Boost_FOUND=FALSE, with it
+            # Boost::filesystem resolves to libboost_filesystem-vc143-mt-x64-1_86.lib.
+            #
+            # Static libs so the binaries and the MSI do not need boost DLLs beside them.
+            # The static/shared-runtime variant is the one that matches FDB's default /MD.
             cmake -S . -B build $COMMON -A x64 -T ClangCL \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DBOOST_ROOT="${{ github.workspace }}/boost" \
               -DBOOST_LIBRARYDIR="${{ github.workspace }}/boost/lib64-msvc-14.3" \
               -DBoost_DIR="${{ github.workspace }}/boost/lib64-msvc-14.3/cmake/Boost-1.86.0" \
+              -DBoost_COMPILER=vc143 -DBoost_USE_STATIC_LIBS=ON \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           else
