@@ -2903,6 +2903,10 @@ public:
 #endif
 
 #include <windows.h>
+// winnt.h defines STATUS_TIMEOUT, which collides with a knob name.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
 #ifdef SI_NO_MBCS
 #define SI_NoCase SI_GenericNoCase
 #else // !SI_NO_MBCS

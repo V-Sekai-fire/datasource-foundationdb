@@ -20,6 +20,7 @@
 
 #define PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
 #include "flow/TLSConfig.actor.h"
+#include <stdexcept>
 #undef PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
 
 // To force typeinfo to only be emitted once.

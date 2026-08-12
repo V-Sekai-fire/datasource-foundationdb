@@ -23,6 +23,7 @@
 #pragma once
 
 #include <mutex>
+#include <stdexcept>
 #include <memory>
 #include <cstdlib>
 #include <cassert>
@@ -30,6 +31,10 @@
 #ifdef WIN32
 #include <system_error>
 #include <Windows.h>
+// winnt.h defines STATUS_TIMEOUT, which collides with a knob name.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
 #endif
 
 namespace crossbow {

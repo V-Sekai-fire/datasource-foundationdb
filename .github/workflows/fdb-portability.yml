@@ -114,7 +114,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg-cache
-          key: vcpkg-windows-lz4-fmt-zlib-openssl-v3
+          key: vcpkg-windows-static-lz4-fmt-zlib-openssl-v4
 
       # Boost comes from the step below rather than from vcpkg, for a reason worth stating:
       # vcpkg installs Boost 1.91, and Boost removed `boost::asio::io_service` in 1.87.
@@ -138,8 +138,8 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            vcpkg install lz4:x64-windows fmt:x64-windows \
-                          zlib:x64-windows openssl:x64-windows && exit 0
+            vcpkg install lz4:x64-windows-static fmt:x64-windows-static \
+                          zlib:x64-windows-static openssl:x64-windows-static && exit 0
             echo "::warning::vcpkg attempt $attempt failed; retrying"
           done
           exit 1
@@ -235,14 +235,31 @@ jobs:
             # over the same Boost with Ninja: without the flag Boost_FOUND=FALSE, with it
             # Boost::filesystem resolves to libboost_filesystem-vc143-mt-x64-1_86.lib.
             #
-            # Static libs so the binaries and the MSI do not need boost DLLs beside them.
-            # The static/shared-runtime variant is the one that matches FDB's default /MD.
+            # Everything on this platform links against the static CRT, because
+            # cmake/ConfigureCompiler.cmake:120 says so:
+            #
+            #     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+            #
+            # That is /MT, and it is not negotiable from here — so every dependency has to
+            # match it or the link fails on a mismatch lld-link states plainly:
+            #
+            #     error: /failifmismatch: mismatch detected for 'RuntimeLibrary':
+            #       flow.lib(SimpleCounter.obj) has value MT_StaticRelease
+            #       libboost_filesystem-vc143-mt-x64-1_86.lib has value MD_DynamicRelease
+            #
+            # Boost_USE_STATIC_LIBS alone picks -mt-x64, a static library against the
+            # dynamic CRT. Adding Boost_USE_STATIC_RUNTIME selects -mt-s-x64 instead.
+            # vcpkg's default x64-windows triplet has the same problem, so the packages
+            # above are installed as x64-windows-static and the triplet is named here too.
+            # zlib is the one that would have failed next, for the same reason.
             cmake -S . -B build $COMMON -A x64 -T ClangCL \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DBOOST_ROOT="${{ github.workspace }}/boost" \
               -DBOOST_LIBRARYDIR="${{ github.workspace }}/boost/lib64-msvc-14.3" \
               -DBoost_DIR="${{ github.workspace }}/boost/lib64-msvc-14.3/cmake/Boost-1.86.0" \
               -DBoost_COMPILER=vc143 -DBoost_USE_STATIC_LIBS=ON \
+              -DBoost_USE_STATIC_RUNTIME=ON \
+              -DVCPKG_TARGET_TRIPLET=x64-windows-static \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           else

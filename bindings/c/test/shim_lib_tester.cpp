@@ -23,6 +23,7 @@
  */
 
 #include "fmt/core.h"
+#include <stdexcept>
 #include "test/fdb_api.hpp"
 #include "SimpleOpt/SimpleOpt.h"
 #include <thread>

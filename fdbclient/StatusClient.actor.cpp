@@ -31,6 +31,12 @@
 
 #include "flow/actorcompiler.h" // has to be last include
 
+// windows.h arrives through these includes and defines STATUS_TIMEOUT, which collides
+// with the knob used below.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
+
 json_spirit::mValue readJSONStrictly(const std::string& s) {
 	json_spirit::mValue val;
 	std::string::const_iterator i = s.begin();

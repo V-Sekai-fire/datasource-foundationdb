@@ -19,6 +19,7 @@
  */
 
 #include "boost/lexical_cast.hpp"
+#include <stdexcept>
 #include "boost/algorithm/string.hpp"
 
 #include <string>

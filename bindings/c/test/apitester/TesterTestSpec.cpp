@@ -19,6 +19,7 @@
  */
 
 #include "TesterTestSpec.h"
+#include <stdexcept>
 #include "TesterUtil.h"
 #include <toml.hpp>
 #include <fmt/format.h>

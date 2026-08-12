@@ -19,6 +19,7 @@
  */
 
 #include <boost/algorithm/string/predicate.hpp>
+#include <stdexcept>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/directory.hpp>
 #include <boost/filesystem/path.hpp>

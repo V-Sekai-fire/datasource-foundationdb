@@ -19,6 +19,7 @@
  */
 
 #include <algorithm>
+#include <stdexcept>
 #include <cstdlib>
 #include <iostream>
 #include <limits>

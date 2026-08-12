@@ -33,6 +33,10 @@
 #define FLOW_ASYNCFILEWINASIO_ACTOR_H
 
 #include <Windows.h>
+// winnt.h defines STATUS_TIMEOUT, which collides with a knob name.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
 #include <boost/bind/bind.hpp>
 #undef min
 #undef max

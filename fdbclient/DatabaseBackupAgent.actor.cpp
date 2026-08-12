@@ -19,6 +19,7 @@
  */
 
 #include <iterator>
+#include <stdexcept>
 #include "fdbclient/BackupAgent.actor.h"
 #include "fdbclient/Status.h"
 #include "fdbclient/StatusClient.h"

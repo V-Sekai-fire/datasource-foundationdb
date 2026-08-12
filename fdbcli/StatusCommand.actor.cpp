@@ -19,6 +19,7 @@
  */
 
 #include "fdbcli/fdbcli.actor.h"
+#include <stdexcept>
 #include "fmt/chrono.h"
 #include "fmt/core.h"
 #include "fmt/format.h"

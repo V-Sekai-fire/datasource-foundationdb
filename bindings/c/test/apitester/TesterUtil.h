@@ -24,6 +24,7 @@
 #define APITESTER_UTIL_H
 
 #include <random>
+#include <stdexcept>
 #include <ostream>
 #include <optional>
 #include <fmt/format.h>

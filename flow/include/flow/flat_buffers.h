@@ -21,6 +21,7 @@
 #pragma once
 
 #include <algorithm>
+#include <stdexcept>
 #include <boost/container/flat_map.hpp>
 #include <iterator>
 #include <cstring>

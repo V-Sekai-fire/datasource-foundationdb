@@ -21,6 +21,7 @@
 #ifndef DDSKETCH_H
 #define DDSKETCH_H
 #include <iterator>
+#include <stdexcept>
 #include <limits>
 #include <type_traits>
 #pragma once

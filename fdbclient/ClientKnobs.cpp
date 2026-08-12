@@ -26,6 +26,12 @@
 #include "flow/UnitTest.h"
 #include "flow/flow.h"
 
+// windows.h arrives through these includes and defines STATUS_TIMEOUT, which collides
+// with the knob used below.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
+
 #define init(...) KNOB_FN(__VA_ARGS__, INIT_ATOMIC_KNOB, INIT_KNOB)(__VA_ARGS__)
 
 ClientKnobs::ClientKnobs(Randomize randomize, IsSimulated isSimulated) {

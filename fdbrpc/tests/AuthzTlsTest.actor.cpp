@@ -20,6 +20,7 @@
 
 #ifndef _WIN32
 #include <algorithm>
+#include <stdexcept>
 #include <cstring>
 #include <cstdlib>
 #include <ctime>

@@ -19,6 +19,7 @@
  */
 
 #include <cstdlib>
+#include <stdexcept>
 #include <fstream>
 #include <string>
 #include <string_view>

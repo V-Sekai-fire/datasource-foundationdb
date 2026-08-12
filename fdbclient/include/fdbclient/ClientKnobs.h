@@ -26,6 +26,12 @@
 #include "flow/Knobs.h"
 #include "flow/flow.h"
 
+// winnt.h defines STATUS_TIMEOUT as an NTSTATUS constant, which collides with the knob of
+// the same name below. FDB does not use the constant.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
+
 FDB_BOOLEAN_PARAM(Randomize);
 FDB_BOOLEAN_PARAM(IsSimulated);
 

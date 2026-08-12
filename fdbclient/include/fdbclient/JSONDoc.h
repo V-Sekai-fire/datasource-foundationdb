@@ -21,6 +21,7 @@
 #pragma once
 
 #include "fdbclient/json_spirit/json_spirit_writer_template.h"
+#include <stdexcept>
 #include "fdbclient/json_spirit/json_spirit_reader_template.h"
 #include "flow/Error.h"
 

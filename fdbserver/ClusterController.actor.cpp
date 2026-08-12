@@ -77,6 +77,12 @@
 
 #include "flow/actorcompiler.h" // This must be the last #include.
 
+// windows.h arrives through these includes and defines STATUS_TIMEOUT, which collides
+// with the knob used below.
+#ifdef STATUS_TIMEOUT
+#undef STATUS_TIMEOUT
+#endif
+
 ACTOR Future<Optional<Value>> getPreviousCoordinators(ClusterControllerData* self) {
 	state ReadYourWritesTransaction tr(self->db.db);
 	loop {
