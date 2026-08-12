@@ -109,19 +109,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/vcpkg-cache
-          key: vcpkg-windows-lz4-fmt-v2
+          key: vcpkg-windows-lz4-fmt-zlib-openssl-v3
 
-      # lz4 and fmt only. Boost comes from the step below rather than from vcpkg, for a reason
-      # worth stating: vcpkg installs Boost 1.91, and Boost removed `boost::asio::io_service`
-      # in 1.87. `flow/IThreadPool.cpp` in release-7.3 still uses it, so `flow` failed with
+      # Boost comes from the step below rather than from vcpkg, for a reason worth stating:
+      # vcpkg installs Boost 1.91, and Boost removed `boost::asio::io_service` in 1.87.
+      # `flow/IThreadPool.cpp` in release-7.3 still uses it, so `flow` failed with
       # "no type named 'io_service' in namespace 'boost::asio'" after configure had already
       # succeeded. The version was never the problem the earlier vcpkg list was solving.
+      #
+      # zlib and openssl are here because cmake/FDBComponents.cmake asks for both with
+      # REQUIRED and no guard:
+      #
+      #     find_package(ZLIB REQUIRED)      # line 36
+      #     find_package(OpenSSL REQUIRED)   # line 37
+      #
+      # -DWITH_TLS=OFF does not reach them — it is read later, in the same file, after both
+      # calls have already run. Configure failed on the first of the two, "Could NOT find
+      # ZLIB (missing: ZLIB_LIBRARY ZLIB_INCLUDE_DIR)"; OpenSSL is the one that would have
+      # failed next, so both go in now rather than one run apart. Linux needs neither line
+      # added: the official build image ships them.
       - name: Dependencies (windows)
         if: matrix.os == 'windows'
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            vcpkg install lz4:x64-windows fmt:x64-windows && exit 0
+            vcpkg install lz4:x64-windows fmt:x64-windows \
+                          zlib:x64-windows openssl:x64-windows && exit 0
             echo "::warning::vcpkg attempt $attempt failed; retrying"
           done
           exit 1
