@@ -128,8 +128,13 @@ public:
 	typedef KeyRangeMapSnapshot<KeyType, ValueType> LocalSnapshot;
 	typedef typename LocalSnapshot::RangeValue RangeValue;
 
-	KeyBackedRangeMap(KeyRef prefix = invalidKey, Optional<WatchableTrigger> trigger = {}, ValueCodec valueCodec = {})
+	// Two constructors, not one with `ValueCodec valueCodec = {}`: a codec with no default
+	// constructor, such as ObjectCodec, makes that default argument ill-formed as soon as anything
+	// asks whether this type is default constructible, which MSVC's <optional> does.
+	KeyBackedRangeMap(KeyRef prefix, Optional<WatchableTrigger> trigger, ValueCodec valueCodec)
 	  : kvMap(prefix, trigger, valueCodec) {}
+	KeyBackedRangeMap(KeyRef prefix = invalidKey, Optional<WatchableTrigger> trigger = {})
+	  : kvMap(prefix, trigger) {}
 
 	// Get the RangeValue for the range that contains key, if there is a begin and end in the map which contain key
 	ACTOR template <class Transaction>
