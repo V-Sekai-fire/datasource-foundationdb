@@ -23,11 +23,24 @@
 #             is foundationdb/build which has all dependencies installed." Four rounds were
 #             lost finding jemalloc, then fmt, one at a time, before reading that sentence.
 #             Linux is the control: until it is green, a red Windows job is ambiguous.
-#   windows — lattice-world-weft/weft-warp-loop's flow-runtime.yml, which builds
-#             FoundationDB's flow/ runtime green on windows-latest. Its comment gives the
-#             rule: "flow uses GNU __attribute__ syntax throughout and has never compiled
-#             under plain MSVC cl.exe - upstream FDB builds Windows with clang." Hence Ninja
-#             and clang-cl, with msvc-dev-cmd for the environment clang-cl needs.
+#   windows — lattice-world-weft/weft-warp-loop's flow-runtime.yml gives the compiler rule:
+#             "flow uses GNU __attribute__ syntax throughout and has never compiled under
+#             plain MSVC cl.exe - upstream FDB builds Windows with clang." That rule holds.
+#             Its *generator* does not transfer, and the first version of this file took it
+#             anyway. weft-warp-loop builds `flow/` alone, a subset whose CMake never reaches
+#             the line below; this builds all of FoundationDB, which does:
+#
+#                 CMakeLists.txt:126        include(EnableCsharp)
+#                 cmake/EnableCsharp.cmake  enable_language(CSharp)   # if(WIN32)
+#
+#             CMake supports the CSharp language only under a Visual Studio generator. Under
+#             Ninja it fails configure with "CMAKE_CSharp_COMPILER not set", and no flag
+#             turns it off: the next include is CompileActorCompiler, and FDB's actor
+#             compiler is itself a C# program. Linux builds it with mono; Windows builds it
+#             through this.
+#
+#             So: the Visual Studio generator with `-T ClangCL`, which is still clang-cl and
+#             so still satisfies the rule above. Do not "simplify" this back to Ninja.
 #
 # Packaging is fpm on Linux and macOS, and FoundationDB's own WiX MSI on Windows —
 # packaging/msi/ already holds FDBInstaller.wxs and cmake/FindWIX.cmake. That target chain
@@ -63,12 +76,15 @@ jobs:
           - os: linux
             runner: ubuntu-24.04
             container: foundationdb/build:rockylinux9-latest
+            fdbserver_jobs: 3
           - os: macos
             runner: macos-14
             container: ""
+            fdbserver_jobs: 3
           - os: windows
             runner: windows-2025
             container: ""
+            fdbserver_jobs: 4
 
     env:
       # vcpkg builds Boost from source, which is the slowest step on Windows by far. A
@@ -127,36 +143,50 @@ jobs:
           done
           exit 1
 
-      # clang-cl needs the MSVC environment to find the STL and the linker.
-      - name: MSVC environment (windows)
-        if: matrix.os == 'windows'
-        uses: ilammy/msvc-dev-cmd@v1
+      # What the runner has, so a kill by the OOM killer is read as one rather than guessed
+      # at. The Linux job died at exit 137 partway through fdbserver with no other evidence.
+      - name: Machine
+        if: matrix.os == 'linux'
+        run: |
+          nproc
+          free -m
+          df -h .
 
       - name: Configure
         shell: bash
         run: |
           set -o pipefail
-          COMMON="-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-                  -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF -DWITH_JAVA_BINDING=OFF
-                  -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF"
+          COMMON="-DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
+                  -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF"
           if [ "${{ matrix.os }}" = windows ]; then
-            cmake -S . -B build $COMMON \
-              -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl \
+            # -T ClangCL is clang-cl. The generator is Visual Studio because CMake enables
+            # the CSharp language nowhere else, and FDB's actor compiler is written in C#.
+            cmake -S . -B build $COMMON -G "Visual Studio 17 2022" -A x64 -T ClangCL \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
           elif [ "${{ matrix.os }}" = macos ]; then
-            cmake -S . -B build $COMMON \
+            cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
           else
-            cmake -S . -B build $COMMON 2>&1 | tee configure.log
+            # RocksDB off, as it already is on the other two. It is 340 targets that build
+            # before fdbserver starts, and a control configured unlike the platforms it is
+            # the control for answers a different question than the one being asked.
+            #
+            # LLD because fdbserver is where a BFD link runs the runner out of memory.
+            # cmake/ConfigureCompiler.cmake takes DEFAULT, LD, BFD, GOLD or LLD, and the
+            # official build image ships lld.
+            cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DWITH_ROCKSDB=OFF -DUSE_LD=LLD 2>&1 | tee configure.log
           fi
 
       # The chain. Each step stops the job, so a failure names the first thing that broke.
+      # `--config Release` is what the Visual Studio generator needs and what the two
+      # single-config generators ignore, so it is passed everywhere rather than branched on.
       - name: Build fdb_c
         shell: bash
         run: |
           set +e
-          cmake --build build --target fdb_c --parallel 2>&1 | tee build-fdb_c.log
+          cmake --build build --config Release --target fdb_c --parallel 2>&1 | tee build-fdb_c.log
           rc=${PIPESTATUS[0]}
           echo "=== first 60 diagnostics ==="
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdb_c.log | head -60
@@ -166,19 +196,28 @@ jobs:
         shell: bash
         run: |
           set +e
-          cmake --build build --target fdbcli --parallel 2>&1 | tee build-fdbcli.log
+          cmake --build build --config Release --target fdbcli --parallel 2>&1 | tee build-fdbcli.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdbcli.log | head -60
           exit $rc
 
       # The one that decides. Everything above is a client.
+      #
+      # Bounded parallelism here and nowhere else. An unqualified `--parallel` gives Ninja
+      # nproc + 2, and fdbserver's actor-generated translation units are large enough that
+      # the runner was killed at exit 137 partway through. A slow build finishes; a build
+      # the kernel kills starts again from nothing.
       - name: Build fdbserver
         shell: bash
         run: |
           set +e
-          cmake --build build --target fdbserver --parallel 2>&1 | tee build-fdbserver.log
+          TIME=""
+          [ -x /usr/bin/time ] && TIME="/usr/bin/time -v"
+          $TIME cmake --build build --config Release --target fdbserver \
+            --parallel ${{ matrix.fdbserver_jobs }} 2>&1 | tee build-fdbserver.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdbserver.log | head -60
+          grep -E "Maximum resident set size" build-fdbserver.log || true
           exit $rc
 
       - name: Package (fpm, linux and macos)
@@ -206,7 +245,7 @@ jobs:
           set +e
           ls "/c/Program Files (x86)/WiX Toolset v3.11/bin" >/dev/null 2>&1 \
             || echo "::warning::no WiX toolset found; the MSI target may not exist"
-          cmake --build build --target MSI --parallel 2>&1 | tee msi.log
+          cmake --build build --config Release --target MSI --parallel 2>&1 | tee msi.log
           rc=$?
           grep -iE "error|fatal|WIX|No rule to make target" msi.log | head -30
           exit $rc
