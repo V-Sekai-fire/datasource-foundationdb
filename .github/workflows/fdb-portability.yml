@@ -133,39 +133,44 @@ jobs:
       #     if(WIN32) find_package(Boost 1.78 COMPONENTS ...) ... return()
       #     elseif(WIN32) message(FATAL_ERROR "Could not find Boost")
       #
-      # So Windows has to be handed a Boost, and this hands it the same 1.78.0 from the same
-      # URL and hash CompileBoost.cmake names, so the platforms agree on the version rather
-      # than on whatever a package manager happens to ship this month.
+      # So Windows has to be handed a Boost, and the version is bounded on both sides. FDB asks
+      # for 1.78 or newer. Boost removed `boost::asio::io_service` in 1.87 and release-7.3's
+      # flow/IThreadPool.cpp still uses it. So anything in 1.78 to 1.86 works, and vcpkg's 1.91
+      # cannot.
       #
-      # Built with msvc rather than clang-win: the static libraries are ABI-compatible with
-      # clang-cl either way, and Boost 1.78 is four years older than the clang on this runner.
+      # Prebuilt rather than built here. Building 1.78 from source was tried and its bootstrap
+      # answered "Failed to build Boost.Build engine": b2 of that vintage predates MSVC 14.51
+      # and cannot detect the compiler on this runner. Every Boost old enough to keep
+      # io_service ships a b2 too old to drive this toolchain, so compiling one is the wrong
+      # end of the problem. These binaries are vc143, and clang-cl targets the same ABI.
+      #
+      # 1.86 also ships lib64-msvc-14.3/cmake/Boost-1.86.0/BoostConfig.cmake, which matters:
+      # CMake 4.4 removed FindBoost, so `find_package(Boost ...)` resolves in config mode or
+      # not at all.
       - name: Cache Boost (windows)
         if: matrix.os == 'windows'
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/boost-install
-          key: boost-1.78.0-msvc-x64-static-v1
+          path: ${{ github.workspace }}/boost
+          key: boost-1.86.0-msvc-14.3-x64-v1
 
-      - name: Boost 1.78 (windows)
+      - name: Boost 1.86 (windows)
         if: matrix.os == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          PREFIX="${{ github.workspace }}/boost-install"
-          if [ -d "$PREFIX/include" ]; then echo "boost already cached at $PREFIX"; exit 0; fi
-          curl -fsSL -o boost.tar.bz2 \
-            "https://archives.boost.io/release/1.78.0/source/boost_1_78_0.tar.bz2"
-          echo "8681f175d4bdb26c52222665793eef08490d7758529330f98d3b29dd0735bccc  boost.tar.bz2" \
-            | sha256sum -c -
-          tar xf boost.tar.bz2
-          cd boost_1_78_0
-          cmd.exe //c bootstrap.bat
-          ./b2.exe -j4 toolset=msvc address-model=64 variant=release \
-            link=static runtime-link=shared \
-            --with-filesystem --with-iostreams --with-serialization --with-system --with-context \
-            -s NO_BZIP2=1 -s NO_LZMA=1 -s NO_ZSTD=1 \
-            --prefix="$PREFIX" install
-          ls "$PREFIX/lib" | head -20
+          $prefix = "$env:GITHUB_WORKSPACE\boost"
+          if (Test-Path "$prefix\boost\version.hpp") { "boost already cached at $prefix"; exit 0 }
+          $url = "https://archives.boost.io/release/1.86.0/binaries/boost_1_86_0-msvc-14.3-64.exe"
+          Invoke-WebRequest -Uri $url -OutFile boost-installer.exe
+          # Inno Setup. /SP- suppresses the "this will install" prompt that /VERYSILENT alone
+          # leaves in place.
+          Start-Process -Wait -FilePath .\boost-installer.exe `
+            -ArgumentList '/VERYSILENT','/SP-','/SUPPRESSMSGBOXES',"/DIR=$prefix"
+          if (-not (Test-Path "$prefix\boost\version.hpp")) { throw "boost headers missing" }
+          if (-not (Test-Path "$prefix\lib64-msvc-14.3\cmake\Boost-1.86.0\BoostConfig.cmake")) {
+            throw "BoostConfig.cmake missing; config mode would fail"
+          }
+          Get-ChildItem "$prefix" | Select-Object -First 10 Name
 
       # What the runner has, so a kill by the OOM killer is read as one rather than guessed
       # at. The Linux job died at exit 137 partway through fdbserver with no other evidence.
@@ -193,7 +198,9 @@ jobs:
             # __attribute__ syntax and has never compiled under cl.exe.
             cmake -S . -B build $COMMON -A x64 -T ClangCL \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-              -DBOOST_ROOT="${{ github.workspace }}/boost-install" \
+              -DBOOST_ROOT="${{ github.workspace }}/boost" \
+              -DBOOST_LIBRARYDIR="${{ github.workspace }}/boost/lib64-msvc-14.3" \
+              -DBoost_DIR="${{ github.workspace }}/boost/lib64-msvc-14.3/cmake/Boost-1.86.0" \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           else
