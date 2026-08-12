@@ -203,8 +203,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          # FDB_RELEASE=ON drops the "-SNAPSHOT" from the MSI name and the build timestamp from
+          # the version, so the artifact is named for the tag it was built from and two runs of
+          # the same commit produce the same name. CMakeLists.txt:96 is what reads it.
           COMMON="-DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
-                  -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF"
+                  -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF
+                  -DFDB_RELEASE=ON"
           if [ "${{ matrix.os }}" = windows ]; then
             # No -G. CMake's default on Windows is the newest installed Visual Studio, which
             # is what is wanted and what naming one is not: this runner ships Visual Studio
@@ -328,9 +332,13 @@ jobs:
           cp build/bin/fdbserver build/bin/fdbcli stage/usr/bin/ 2>/dev/null || true
           cp build/lib/libfdb_c.* stage/usr/lib/ 2>/dev/null || true
           T=$([ "${{ matrix.os }}" = linux ] && echo "deb rpm" || echo "osxpkg")
+          # From CMakeLists.txt, not typed here: the MSI takes its version from the project and
+          # a hardcoded one drifts away from it on every rebase, which it already had.
+          V=$(sed -n 's/^ *VERSION \([0-9][0-9.]*\) *$/\1/p' CMakeLists.txt | head -1)
+          [ -n "$V" ] || { echo "::error::no VERSION in CMakeLists.txt"; exit 1; }
           for t in $T; do
-            fpm -s dir -t "$t" -n foundationdb-portability -v 7.3.76 \
-              --description "FoundationDB 7.3.76 built from source for ${{ matrix.os }}" \
+            fpm -s dir -t "$t" -n foundationdb-portability -v "$V" \
+              --description "FoundationDB $V built from source for ${{ matrix.os }}" \
               -C stage . || echo "::warning::fpm $t failed"
           done
           ls -l *.deb *.rpm *.pkg 2>/dev/null || true
