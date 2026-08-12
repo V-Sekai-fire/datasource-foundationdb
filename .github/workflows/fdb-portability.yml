@@ -1,53 +1,20 @@
-# FoundationDB for Windows, with Linux as the control: build the chain, then package it.
+# Build and package FoundationDB on Windows and macOS, with Linux as the control.
 #
-# Why this exists. FoundationDB supplies no Windows binaries — 7.3.76 carries deb, rpm,
-# .so, x86_64 and aarch64 assets and nothing else, and no recent release differs. Upstream's
-# `windows-boost-test.yml` looks like it covers the gap and does not: its step is named
-# "Configure and Build" and runs only `cmake ..`.
+# 7.3.76 ships deb, rpm and .so and nothing else, so neither Windows nor macOS has an
+# upstream binary. One job per platform, and the targets chain in a single build tree:
+# fdb_c -> fdbcli -> fdbserver -> package. fdbserver is the one that decides; a green
+# fdb_c and fdbcli with a red fdbserver is a client-only port.
 #
-# One job per platform, not one per target. The first version used a target matrix, and it
-# was wrong twice over: three Windows jobs each spent forty minutes building the same Boost,
-# and each rebuilt the whole of `flow` from scratch to reach its own target. Here the
-# dependencies install once, `flow` compiles once, and the targets chain in one build tree:
+# Linux builds in the official foundationdb/build image. Windows needs a Visual Studio
+# generator, because CMake enables the CSharp language nowhere else and FDB's actor
+# compiler is a C# program, plus -T ClangCL, because flow uses GNU __attribute__ syntax
+# and has never compiled under cl.exe. macOS needs almost no flags: cmake/ already knows
+# the APPLE defaults.
 #
-#     fdb_c -> fdbcli -> fdbserver -> package
-#
-# The order is the point. `fdbserver` is the only target that decides anything: a green
-# `fdb_c` and `fdbcli` with a red `fdbserver` is a client-only Windows, which has already
-# been ruled insufficient. Chaining them means a failure names the first thing that broke,
-# and nothing downstream runs to muddy it.
-#
-# Recipes come from sources that already work, not from guessing:
-#
-#   linux   — the official build image. README.md: "The official docker image for building
-#             is foundationdb/build which has all dependencies installed." Four rounds were
-#             lost finding jemalloc, then fmt, one at a time, before reading that sentence.
-#             Linux is the control: until it is green, a red Windows job is ambiguous.
-#   windows — lattice-world-weft/weft-warp-loop's flow-runtime.yml gives the compiler rule:
-#             "flow uses GNU __attribute__ syntax throughout and has never compiled under
-#             plain MSVC cl.exe - upstream FDB builds Windows with clang." That rule holds.
-#             Its *generator* does not transfer, and the first version of this file took it
-#             anyway. weft-warp-loop builds `flow/` alone, a subset whose CMake never reaches
-#             the line below; this builds all of FoundationDB, which does:
-#
-#                 CMakeLists.txt:126        include(EnableCsharp)
-#                 cmake/EnableCsharp.cmake  enable_language(CSharp)   # if(WIN32)
-#
-#             CMake supports the CSharp language only under a Visual Studio generator. Under
-#             Ninja it fails configure with "CMAKE_CSharp_COMPILER not set", and no flag
-#             turns it off: the next include is CompileActorCompiler, and FDB's actor
-#             compiler is itself a C# program. Linux builds it with mono; Windows builds it
-#             through this.
-#
-#             So: the Visual Studio generator with `-T ClangCL`, which is still clang-cl and
-#             so still satisfies the rule above. Do not "simplify" this back to Ninja.
-#
-# macOS is out of the matrix for now. It was the one green platform and it proves nothing that
-# is in question: the port that has to be shown is Windows, and Linux is the control for it.
-#
-# Packaging is fpm on Linux and FoundationDB's own WiX MSI on Windows —
-# packaging/msi/ already holds FDBInstaller.wxs and cmake/FindWIX.cmake. That target chain
-# needs python_binding, so no job disables it.
+# Packaging is FoundationDB's own where FoundationDB has one - WiX from packaging/msi/ on
+# Windows, packaging/osx/buildpkg.sh on macOS. Linux uses fpm, because the in-tree deb and
+# rpm rules run through CPack as part of `packages`, which builds far more than the control
+# needs.
 name: fdb portability
 
 on:
@@ -58,7 +25,6 @@ on:
 permissions:
   contents: read
 
-# A newer push supersedes an older run rather than racing it for runners.
 concurrency:
   group: fdb-portability-${{ github.ref }}
   cancel-in-progress: true
@@ -77,27 +43,25 @@ jobs:
             runner: ubuntu-24.04
             container: foundationdb/build:rockylinux9-latest
             fdbserver_jobs: 3
+          # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
+          # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
+          # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
+          # memory in the matrix.
+          - os: macos
+            runner: macos-14
+            container: ""
+            fdbserver_jobs: 3
           - os: windows
             runner: windows-2025
             container: ""
             fdbserver_jobs: 4
 
     env:
-      # A binary cache, so a second run reuses what the first one built.
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
 
     steps:
-      # This fork, not apple/foundationdb. The port needs to carry source fixes, and a build
-      # of someone else's checkout cannot: `flow/Trace.cpp` uses std::chrono::system_clock
-      # without including <chrono>, which compiles on Linux and macOS only because libstdc++
-      # and libc++ happen to pull the header in transitively. MSVC's STL does not, so
-      # clang-cl on Windows fails with "no type named 'system_clock' in namespace
-      # 'std::chrono'" — a real portability defect in FDB rather than anything about this
-      # workflow, and one that cannot be fixed from the CI file.
-      #
-      # Building this branch is equivalent to building upstream: it is origin/release-7.3
-      # with commits that, before this one, touched only this file. The Windows fixes land
-      # here as ordinary source commits and stay reviewable as a diff against release-7.3.
+      # This fork, not apple/foundationdb: the port carries source fixes that cannot be made
+      # from a CI file. It is origin/release-7.3 plus commits reviewable as a diff against it.
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
@@ -109,6 +73,21 @@ jobs:
         if: matrix.os != 'linux'
         run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
 
+      # mono is not on the runner image and EnableCsharp.cmake FATAL_ERRORs without mono and
+      # mcs. openssl@3 is keg-only, hence the prefix passed at configure.
+      #
+      # Deliberately not installed: boost (CompileBoost.cmake asks 1.78.0 EXACT, so Homebrew's
+      # is never selected and its headers only risk mixing with the 1.78 that is), fmt
+      # (contrib asks 8.1.1 EXACT and falls back to contrib/fmt-8.1.1), lz4 (RocksDB only),
+      # jemalloc (ConfigureCompiler.cmake:39 defaults it off for APPLE).
+      - name: Dependencies (macos)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install mono ninja openssl@3
+          mono --version | head -1
+
       - name: Cache vcpkg binaries (windows)
         if: matrix.os == 'windows'
         uses: actions/cache@v4
@@ -116,23 +95,9 @@ jobs:
           path: ${{ github.workspace }}/vcpkg-cache
           key: vcpkg-windows-static-lz4-fmt-zlib-openssl-v4
 
-      # Boost comes from the step below rather than from vcpkg, for a reason worth stating:
-      # vcpkg installs Boost 1.91, and Boost removed `boost::asio::io_service` in 1.87.
-      # `flow/IThreadPool.cpp` in release-7.3 still uses it, so `flow` failed with
-      # "no type named 'io_service' in namespace 'boost::asio'" after configure had already
-      # succeeded. The version was never the problem the earlier vcpkg list was solving.
-      #
-      # zlib and openssl are here because cmake/FDBComponents.cmake asks for both with
-      # REQUIRED and no guard:
-      #
-      #     find_package(ZLIB REQUIRED)      # line 36
-      #     find_package(OpenSSL REQUIRED)   # line 37
-      #
-      # -DWITH_TLS=OFF does not reach them — it is read later, in the same file, after both
-      # calls have already run. Configure failed on the first of the two, "Could NOT find
-      # ZLIB (missing: ZLIB_LIBRARY ZLIB_INCLUDE_DIR)"; OpenSSL is the one that would have
-      # failed next, so both go in now rather than one run apart. Linux needs neither line
-      # added: the official build image ships them.
+      # zlib and openssl are find_package(... REQUIRED) at FDBComponents.cmake:36-37 with no
+      # guard; -DWITH_TLS=OFF is read later in the same file and does not reach them. The
+      # -static triplet is required by ConfigureCompiler.cmake:120, which sets /MT.
       - name: Dependencies (windows)
         if: matrix.os == 'windows'
         shell: bash
@@ -144,27 +109,15 @@ jobs:
           done
           exit 1
 
-      # FoundationDB builds its own Boost everywhere except Windows. `cmake/CompileBoost.cmake`
-      # pins 1.78.0, and its `compile_boost` runs `./bootstrap.sh` and `./b2` with -fPIC, which
-      # is POSIX-only. The Windows branch above it has no such fallback:
+      # CompileBoost.cmake builds Boost everywhere except WIN32, where it either finds one or
+      # calls FATAL_ERROR, so Windows has to be handed one. The version is bounded on both
+      # sides: FDB asks for 1.78 or newer, and flow/IThreadPool.cpp uses boost::asio::io_service,
+      # which Boost removed in 1.87 - so vcpkg's 1.91 cannot work.
       #
-      #     if(WIN32) find_package(Boost 1.78 COMPONENTS ...) ... return()
-      #     elseif(WIN32) message(FATAL_ERROR "Could not find Boost")
-      #
-      # So Windows has to be handed a Boost, and the version is bounded on both sides. FDB asks
-      # for 1.78 or newer. Boost removed `boost::asio::io_service` in 1.87 and release-7.3's
-      # flow/IThreadPool.cpp still uses it. So anything in 1.78 to 1.86 works, and vcpkg's 1.91
-      # cannot.
-      #
-      # Prebuilt rather than built here. Building 1.78 from source was tried and its bootstrap
-      # answered "Failed to build Boost.Build engine": b2 of that vintage predates MSVC 14.51
-      # and cannot detect the compiler on this runner. Every Boost old enough to keep
-      # io_service ships a b2 too old to drive this toolchain, so compiling one is the wrong
-      # end of the problem. These binaries are vc143, and clang-cl targets the same ABI.
-      #
-      # 1.86 also ships lib64-msvc-14.3/cmake/Boost-1.86.0/BoostConfig.cmake, which matters:
-      # CMake 4.4 removed FindBoost, so `find_package(Boost ...)` resolves in config mode or
-      # not at all.
+      # Prebuilt rather than compiled: every Boost old enough to keep io_service ships a b2 too
+      # old to detect MSVC 14.51, and bootstrap fails with "Failed to build Boost.Build engine".
+      # These are vc143 binaries and clang-cl targets the same ABI. 1.86 also ships
+      # BoostConfig.cmake, which CMake 4.4 requires now that FindBoost is gone.
       - name: Cache Boost (windows)
         if: matrix.os == 'windows'
         uses: actions/cache@v4
@@ -180,8 +133,7 @@ jobs:
           if (Test-Path "$prefix\boost\version.hpp") { "boost already cached at $prefix"; exit 0 }
           $url = "https://archives.boost.io/release/1.86.0/binaries/boost_1_86_0-msvc-14.3-64.exe"
           Invoke-WebRequest -Uri $url -OutFile boost-installer.exe
-          # Inno Setup. /SP- suppresses the "this will install" prompt that /VERYSILENT alone
-          # leaves in place.
+          # Inno Setup; /SP- suppresses the prompt /VERYSILENT alone leaves in place.
           Start-Process -Wait -FilePath .\boost-installer.exe `
             -ArgumentList '/VERYSILENT','/SP-','/SUPPRESSMSGBOXES',"/DIR=$prefix"
           if (-not (Test-Path "$prefix\boost\version.hpp")) { throw "boost headers missing" }
@@ -190,72 +142,37 @@ jobs:
           }
           Get-ChildItem "$prefix" | Select-Object -First 10 Name
 
-      # What the runner has, so a kill by the OOM killer is read as one rather than guessed
-      # at. The Linux job died at exit 137 partway through fdbserver with no other evidence.
+      # So an exit 137 is read as an OOM kill rather than guessed at.
       - name: Machine
-        if: matrix.os == 'linux'
+        if: matrix.os != 'windows'
+        shell: bash
         run: |
-          nproc
-          free -m
+          if [ "${{ matrix.os }}" = macos ]; then
+            sysctl -n hw.ncpu hw.memsize
+          else
+            nproc
+            free -m
+          fi
           df -h .
 
       - name: Configure
         shell: bash
         run: |
           set -o pipefail
-          # FDB_RELEASE=ON drops the "-SNAPSHOT" from the MSI name and the build timestamp from
-          # the version, so the artifact is named for the tag it was built from and two runs of
-          # the same commit produce the same name. CMakeLists.txt:96 is what reads it.
+          # FDB_RELEASE=ON drops "-SNAPSHOT" and the build timestamp, so two runs of the same
+          # commit produce the same package name (CMakeLists.txt:96).
           COMMON="-DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
                   -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF
                   -DFDB_RELEASE=ON"
           if [ "${{ matrix.os }}" = windows ]; then
-            # No -G. CMake's default on Windows is the newest installed Visual Studio, which
-            # is what is wanted and what naming one is not: this runner ships Visual Studio
-            # 18, so "Visual Studio 17 2022" named a generator that is not installed. The
-            # generator has to be Visual Studio at all because CMake enables the CSharp
-            # language nowhere else, and FDB's actor compiler is written in C#.
+            # No -G: CMake's default is the newest installed Visual Studio, and this runner
+            # ships VS 18, so naming "Visual Studio 17 2022" named one that is not there.
             #
-            # -T ClangCL is still clang-cl, which is the load-bearing part: flow uses GNU
-            # __attribute__ syntax and has never compiled under cl.exe.
-            # -DBoost_COMPILER=vc143 is what makes the prebuilt Boost usable, and it is not
-            # cosmetic: without it configure reaches `Generating` and then dies at
-            # cmake/CompileBoost.cmake:156 with 'The link interface of target "boost_target"
-            # contains Boost::filesystem but the target was not found'. That message names
-            # the symptom two steps downstream of the cause. The cause is one STATUS line
-            # above it:
-            #
-            #     Could NOT find Boost: missing: filesystem iostreams serialization system
-            #       (found .../BoostConfig.cmake, suitable version "1.86.0")
-            #
-            # The config is found; every component is skipped. BoostDetectToolset-1.86.0.cmake
-            # reads CMAKE_CXX_COMPILER_ID "Clang" with MSVC_VERSION set and concludes the
-            # toolset is `clangw<N>`, so each libboost_*-variant-vc143-*.cmake skips itself.
-            # Its own skip reason says what to do: "vc143, detected clangw22, set
-            # Boost_COMPILER to override". clang-cl targets the MSVC ABI, which is why
-            # overriding it is sound rather than a workaround.
-            #
-            # Reproduced and fixed locally before this was pushed, driving the same clang-cl
-            # over the same Boost with Ninja: without the flag Boost_FOUND=FALSE, with it
-            # Boost::filesystem resolves to libboost_filesystem-vc143-mt-x64-1_86.lib.
-            #
-            # Everything on this platform links against the static CRT, because
-            # cmake/ConfigureCompiler.cmake:120 says so:
-            #
-            #     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-            #
-            # That is /MT, and it is not negotiable from here — so every dependency has to
-            # match it or the link fails on a mismatch lld-link states plainly:
-            #
-            #     error: /failifmismatch: mismatch detected for 'RuntimeLibrary':
-            #       flow.lib(SimpleCounter.obj) has value MT_StaticRelease
-            #       libboost_filesystem-vc143-mt-x64-1_86.lib has value MD_DynamicRelease
-            #
-            # Boost_USE_STATIC_LIBS alone picks -mt-x64, a static library against the
-            # dynamic CRT. Adding Boost_USE_STATIC_RUNTIME selects -mt-s-x64 instead.
-            # vcpkg's default x64-windows triplet has the same problem, so the packages
-            # above are installed as x64-windows-static and the triplet is named here too.
-            # zlib is the one that would have failed next, for the same reason.
+            # -DBoost_COMPILER=vc143 is load-bearing. BoostDetectToolset reads Clang with
+            # MSVC_VERSION set, concludes clangw22, and every vc143 component skips itself;
+            # configure then dies at CompileBoost.cmake:156 on a missing Boost::filesystem,
+            # two steps downstream of the cause. Boost_USE_STATIC_RUNTIME picks -mt-s-x64,
+            # matching the /MT that ConfigureCompiler.cmake:120 sets and lld-link enforces.
             cmake -S . -B build $COMMON -A x64 -T ClangCL \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DBOOST_ROOT="${{ github.workspace }}/boost" \
@@ -266,28 +183,31 @@ jobs:
               -DVCPKG_TARGET_TRIPLET=x64-windows-static \
               -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
+          elif [ "${{ matrix.os }}" = macos ]; then
+            # Only what cmake/ cannot work out: the keg-only OpenSSL prefix, and RocksDB off
+            # to match the other two. jemalloc, the linker and libc++ are already handled for
+            # APPLE by ConfigureCompiler.cmake and CompilerChecks.cmake. TLS stays on, as on
+            # Linux. Boost is not installed, so FDB compiles its own 1.78 - the supported
+            # macOS path, and the slowest step in this job.
+            cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DWITH_ROCKSDB=OFF \
+              -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" 2>&1 | tee configure.log
           else
-            # RocksDB off, as it already is on the other two. It is 340 targets that build
-            # before fdbserver starts, and a control configured unlike the platforms it is
-            # the control for answers a different question than the one being asked.
-            #
-            # LLD because fdbserver is where a BFD link runs the runner out of memory.
-            # cmake/ConfigureCompiler.cmake takes DEFAULT, LD, BFD, GOLD or LLD, and the
-            # official build image ships lld.
+            # RocksDB off, as on the other two: it is 340 targets before fdbserver starts, and
+            # a control configured unlike what it controls answers a different question. LLD
+            # because a BFD link of fdbserver runs the runner out of memory.
             cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
               -DWITH_ROCKSDB=OFF -DUSE_LD=LLD 2>&1 | tee configure.log
           fi
 
-      # The chain. Each step stops the job, so a failure names the first thing that broke.
-      # `--config Release` is what the Visual Studio generator needs and what the two
-      # single-config generators ignore, so it is passed everywhere rather than branched on.
+      # Each step stops the job, so a failure names the first thing that broke. --config Release
+      # is what the Visual Studio generator needs and what Ninja ignores.
       - name: Build fdb_c
         shell: bash
         run: |
           set +e
           cmake --build build --config Release --target fdb_c --parallel 2>&1 | tee build-fdb_c.log
           rc=${PIPESTATUS[0]}
-          echo "=== first 60 diagnostics ==="
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdb_c.log | head -60
           exit $rc
 
@@ -300,25 +220,22 @@ jobs:
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdbcli.log | head -60
           exit $rc
 
-      # The one that decides. Everything above is a client.
-      #
-      # Bounded parallelism here and nowhere else. An unqualified `--parallel` gives Ninja
-      # nproc + 2, and fdbserver's actor-generated translation units are large enough that
-      # the runner was killed at exit 137 partway through. A slow build finishes; a build
-      # the kernel kills starts again from nothing.
+      # The one that decides; everything above is a client. Parallelism is bounded here and
+      # nowhere else: fdbserver's actor-generated translation units are large enough that an
+      # unqualified --parallel got the job killed at exit 137.
       - name: Build fdbserver
         shell: bash
         run: |
           set +e
-          # GNU time only. BSD `time` on the macOS runner has no -v and fails the step, which
-          # it did.
+          # GNU time takes -v, BSD time takes -l, and Windows has neither.
           TIME=""
-          [ "${{ matrix.os }}" = linux ] && [ -x /usr/bin/time ] && TIME="/usr/bin/time -v"
+          [ "${{ matrix.os }}" = linux ] && TIME="/usr/bin/time -v"
+          [ "${{ matrix.os }}" = macos ] && TIME="/usr/bin/time -l"
           $TIME cmake --build build --config Release --target fdbserver \
             --parallel ${{ matrix.fdbserver_jobs }} 2>&1 | tee build-fdbserver.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdbserver.log | head -60
-          grep -E "Maximum resident set size" build-fdbserver.log || true
+          grep -iE "maximum resident set size" build-fdbserver.log || true
           exit $rc
 
       - name: Package (fpm, linux)
@@ -331,36 +248,43 @@ jobs:
           mkdir -p stage/usr/bin stage/usr/lib
           cp build/bin/fdbserver build/bin/fdbcli stage/usr/bin/ 2>/dev/null || true
           cp build/lib/libfdb_c.* stage/usr/lib/ 2>/dev/null || true
-          T=$([ "${{ matrix.os }}" = linux ] && echo "deb rpm" || echo "osxpkg")
-          # From CMakeLists.txt, not typed here: the MSI takes its version from the project and
-          # a hardcoded one drifts away from it on every rebase, which it already had.
+          # From CMakeLists.txt, not typed here: a hardcoded version drifts on every rebase.
           V=$(sed -n 's/^ *VERSION \([0-9][0-9.]*\) *$/\1/p' CMakeLists.txt | head -1)
           [ -n "$V" ] || { echo "::error::no VERSION in CMakeLists.txt"; exit 1; }
-          for t in $T; do
+          for t in deb rpm; do
             fpm -s dir -t "$t" -n foundationdb-portability -v "$V" \
-              --description "FoundationDB $V built from source for ${{ matrix.os }}" \
+              --description "FoundationDB $V built from source for linux" \
               -C stage . || echo "::warning::fpm $t failed"
           done
-          ls -l *.deb *.rpm *.pkg 2>/dev/null || true
+          ls -l *.deb *.rpm 2>/dev/null || true
 
-      # The target is `installer`, not `MSI`. There is no target named MSI anywhere in the
-      # tree — packaging/msi/CMakeLists.txt:53 is `add_custom_target(installer ...)`, and the
-      # only other name here is the aggregate `packages` from FDBComponents.cmake:231. The
-      # earlier `--target MSI` would have failed at packaging however well the build went.
-      #
-      # WiX is found, and not where this step used to look. cmake/FindWIX.cmake resolves
-      # candle and light through `$ENV{WIX}` rather than a versioned path, and the runner's
-      # configure log already says: Found WIX: C:/Program Files (x86)/WiX Toolset
-      # v3.14/bin/candle.exe. The old probe tested for v3.11 and would have warned about a
-      # WiX that was present all along, so it checks $WIX now — the variable FindWIX uses.
-      #
-      # No `|| true` anywhere in here. An MSI that silently does not get built is the exact
-      # outcome this job exists to detect.
-      #
-      # `installer` pulls in fdbmonitor, fdbbackup and python_binding on top of the three
-      # targets built above (packaging/msi/CMakeLists.txt:30), so this step builds them.
-      # It writes build/packages/foundationdb-<version>-SNAPSHOT-x64.msi, which the
-      # `build/**/*.msi` line in the upload glob already covers.
+      # FDB's own packaging, unbuilt by any CI until now. buildpkg.sh reads build/version.txt,
+      # bin/{fdbcli,fdbbackup,fdbserver,fdbmonitor}, lib/libfdb_c.dylib, the generated headers
+      # and bindings/python/fdb/*.py, so the three targets the chain above has not built are
+      # built first. No `|| true`: a package that silently is not produced is what this checks.
+      - name: Package (pkgbuild, macos)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set +e
+          cmake --build build --config Release \
+            --target fdbbackup fdbmonitor python_binding --parallel 2>&1 | tee build-pkgdeps.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            grep -iE "error|fatal|Could NOT find" build-pkgdeps.log | head -30; exit $rc
+          fi
+          mkdir -p build/packages
+          ./packaging/osx/buildpkg.sh build . 2>&1 | tee pkg.log
+          rc=${PIPESTATUS[0]}
+          find build/packages -name '*.pkg' -print
+          [ "$rc" -eq 0 ] && [ -z "$(find build/packages -name '*.pkg' -print -quit)" ] && {
+            echo "::error::buildpkg.sh succeeded but produced no .pkg"; rc=1; }
+          exit $rc
+
+      # The target is `installer`; there is no target named MSI anywhere in the tree
+      # (packaging/msi/CMakeLists.txt:53). FindWIX.cmake resolves candle and light through
+      # $ENV{WIX}, so that is what is probed. `installer` also pulls in fdbmonitor, fdbbackup
+      # and python_binding. No `|| true`, for the same reason as macOS above.
       - name: Package (MSI, windows)
         if: matrix.os == 'windows'
         shell: bash
@@ -370,8 +294,7 @@ jobs:
           cmake --build build --config Release --target installer --parallel 2>&1 | tee msi.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|WIX|No rule to make target" msi.log | head -30
-          echo "=== msi produced ==="
-          find build -name '*.msi' -print -o -name 'packages' -type d -print | head
+          find build -name '*.msi' -print
           [ "$rc" -eq 0 ] && [ -z "$(find build -name '*.msi' -print -quit)" ] && {
             echo "::error::installer target succeeded but produced no .msi"; rc=1; }
           exit $rc
@@ -399,7 +322,7 @@ jobs:
             build/**/*.exe
             build/**/fdb_c.dll
             build/**/*.msi
+            build/packages/*.pkg
             *.deb
             *.rpm
-            *.pkg
           if-no-files-found: warn
