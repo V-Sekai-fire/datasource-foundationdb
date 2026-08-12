@@ -101,10 +101,31 @@ jobs:
           path: ${{ github.workspace }}/vcpkg-cache
           key: vcpkg-windows-boost-lz4-fmt-v1
 
+      # The exact components, not the whole Boost meta-port. This list is
+      # lattice-world-weft/weft-warp-loop's vcpkg.json, which is known to build FoundationDB's
+      # flow runtime on Windows. `boost:x64-windows` pulls all of Boost 1.91, and one run died
+      # on `curl error 35 (SSL connect error)` fetching a LICENSE file — vcpkg calls error 35
+      # non-transient and gives up. A smaller set is a smaller surface to flake on.
+      #
+      # boost-context is excluded on Windows, per that same manifest.
       - name: Dependencies (windows)
         if: matrix.os == 'windows'
         shell: bash
-        run: vcpkg install boost:x64-windows lz4:x64-windows fmt:x64-windows
+        run: |
+          for attempt in 1 2 3; do
+            vcpkg install \
+              boost-asio:x64-windows boost-bind:x64-windows boost-algorithm:x64-windows \
+              boost-format:x64-windows boost-core:x64-windows boost-unordered:x64-windows \
+              boost-container:x64-windows boost-preprocessor:x64-windows \
+              boost-filesystem:x64-windows boost-iostreams:x64-windows \
+              boost-serialization:x64-windows boost-program-options:x64-windows \
+              boost-url:x64-windows boost-random:x64-windows boost-range:x64-windows \
+              boost-intrusive:x64-windows boost-lockfree:x64-windows \
+              boost-system:x64-windows boost-lexical-cast:x64-windows \
+              boost-functional:x64-windows lz4:x64-windows fmt:x64-windows && exit 0
+            echo "::warning::vcpkg attempt $attempt failed; retrying"
+          done
+          exit 1
 
       # clang-cl needs the MSVC environment to find the STL and the linker.
       - name: MSVC environment (windows)
