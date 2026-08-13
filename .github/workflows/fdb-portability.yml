@@ -227,14 +227,25 @@ jobs:
         shell: bash
         run: |
           set +e
-          # GNU time takes -v, BSD time takes -l, and Windows has neither. The rockylinux9
-          # build image ships no /usr/bin/time at all, so it is probed rather than assumed:
-          # peak RSS is a diagnostic, and a missing diagnostic must not be the exit 127 that
-          # ends a 30-minute job.
+          # GNU time takes -v, BSD time takes -l, and Windows has neither. Probe for the
+          # binary rather than inferring it from the OS: the linux job runs inside
+          # foundationdb/build:rockylinux9-latest, which does not ship GNU time (it is a
+          # separate RPM), so assuming the platform implied the tool failed the build at
+          # exit 127 before cmake was ever reached. macOS carries it in the base system,
+          # which is why only linux broke and the failure looked like a compiler error.
+          #
+          # The measurement earns its keep (see the exit 137 note above), so install it
+          # when a package manager is present and fall back to an unmeasured build when
+          # it is not. Losing the peak-RSS line must not cost us the build.
           TIME=""
+          if [ ! -x /usr/bin/time ] && [ "${{ matrix.os }}" = linux ] && command -v dnf >/dev/null 2>&1; then
+            dnf install -y time >/dev/null 2>&1 || true
+          fi
           if [ -x /usr/bin/time ]; then
             [ "${{ matrix.os }}" = linux ] && TIME="/usr/bin/time -v"
             [ "${{ matrix.os }}" = macos ] && TIME="/usr/bin/time -l"
+          else
+            echo "note: /usr/bin/time absent; building without peak-RSS measurement"
           fi
           $TIME cmake --build build --config Release --target fdbserver \
             --parallel ${{ matrix.fdbserver_jobs }} 2>&1 | tee build-fdbserver.log
