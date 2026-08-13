@@ -227,10 +227,15 @@ jobs:
         shell: bash
         run: |
           set +e
-          # GNU time takes -v, BSD time takes -l, and Windows has neither.
+          # GNU time takes -v, BSD time takes -l, and Windows has neither. The rockylinux9
+          # build image ships no /usr/bin/time at all, so it is probed rather than assumed:
+          # peak RSS is a diagnostic, and a missing diagnostic must not be the exit 127 that
+          # ends a 30-minute job.
           TIME=""
-          [ "${{ matrix.os }}" = linux ] && TIME="/usr/bin/time -v"
-          [ "${{ matrix.os }}" = macos ] && TIME="/usr/bin/time -l"
+          if [ -x /usr/bin/time ]; then
+            [ "${{ matrix.os }}" = linux ] && TIME="/usr/bin/time -v"
+            [ "${{ matrix.os }}" = macos ] && TIME="/usr/bin/time -l"
+          fi
           $TIME cmake --build build --config Release --target fdbserver \
             --parallel ${{ matrix.fdbserver_jobs }} 2>&1 | tee build-fdbserver.log
           rc=${PIPESTATUS[0]}
