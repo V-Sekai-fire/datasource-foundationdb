@@ -42,7 +42,7 @@ jobs:
           - os: linux
             runner: ubuntu-24.04
             container: foundationdb/build:rockylinux9-latest
-            fdbserver_jobs: 3
+            fdbserver_jobs: 2
           # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
           # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
           # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
@@ -181,7 +181,7 @@ jobs:
               -DBoost_COMPILER=vc143 -DBoost_USE_STATIC_LIBS=ON \
               -DBoost_USE_STATIC_RUNTIME=ON \
               -DVCPKG_TARGET_TRIPLET=x64-windows-static \
-              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DWITH_ROCKSDB=OFF 2>&1 | tee configure.log
+              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DSSD_ROCKSDB_EXPERIMENTAL=OFF 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           elif [ "${{ matrix.os }}" = macos ]; then
             # Only what cmake/ cannot work out: the keg-only OpenSSL prefix, and RocksDB off
@@ -190,14 +190,14 @@ jobs:
             # Linux. Boost is not installed, so FDB compiles its own 1.78 - the supported
             # macOS path, and the slowest step in this job.
             cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DWITH_ROCKSDB=OFF \
+              -DSSD_ROCKSDB_EXPERIMENTAL=OFF \
               -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" 2>&1 | tee configure.log
           else
             # RocksDB off, as on the other two: it is 340 targets before fdbserver starts, and
             # a control configured unlike what it controls answers a different question. LLD
             # because a BFD link of fdbserver runs the runner out of memory.
             cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DWITH_ROCKSDB=OFF -DUSE_LD=LLD 2>&1 | tee configure.log
+              -DSSD_ROCKSDB_EXPERIMENTAL=OFF -DUSE_LD=LLD 2>&1 | tee configure.log
           fi
 
       # Each step stops the job, so a failure names the first thing that broke. --config Release
