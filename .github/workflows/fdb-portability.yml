@@ -185,7 +185,20 @@ jobs:
           # different builds". Pinned to the commit's own date, two runs of one commit agree
           # and two different commits do not, which is what was wanted. -ggdb1 and -gz come
           # back with it.
-          STAMP=$(git show -s --format=%cd --date=format:%Y%m%d%H%M%S HEAD)
+          #
+          # The checkout is owned by a different uid than the container runs as, so git
+          # refuses it as "dubious ownership". This step runs under bash -e, so that refusal
+          # ended the step before cmake was reached, which is why the first attempt failed in
+          # seconds with no configure output at all. Marking it safe is the documented fix,
+          # and the value is checked rather than assumed: a package named after an empty
+          # timestamp is worse than one named after a real clock.
+          git config --global --add safe.directory "$PWD" || true
+          STAMP=$(git show -s --format=%cd --date=format:%Y%m%d%H%M%S HEAD 2>/dev/null || true)
+          if [ -z "$STAMP" ]; then
+            echo "::error::cannot read the commit date, so package names would not be reproducible"
+            exit 1
+          fi
+          echo "package timestamp pinned to the commit: $STAMP"
           COMMON="-DCMAKE_EXPORT_COMPILE_COMMANDS=ON
                   -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
                   -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF
