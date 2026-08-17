@@ -169,11 +169,27 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # FDB_RELEASE=ON drops "-SNAPSHOT" and the build timestamp, so two runs of the same
-          # commit produce the same package name (CMakeLists.txt:96).
-          COMMON="-DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
+          # Deterministic package names without FDB_RELEASE.
+          #
+          # FDB_RELEASE=ON was set to drop the build timestamp so two runs of the same commit
+          # name their packages the same (CMakeLists.txt:96). It also does something the
+          # comment never said: ConfigureCompiler.cmake:181 reads it as "generate full debug
+          # symbols" and emits -ggdb instead of -ggdb1, and :191 then refuses to compress
+          # them because CPack cannot build a debuginfo package from compressed sections. So
+          # a naming convenience bought the largest debug info clang can emit, uncompressed,
+          # on the actor-generated translation units -- which are the ones that killed the
+          # linux job at [328/595].
+          #
+          # CMakeLists.txt:100 already offers the honest way to get the same names:
+          # FDB_BUILDTIME is a cache variable "required to achieve uniform naming across
+          # different builds". Pinned to the commit's own date, two runs of one commit agree
+          # and two different commits do not, which is what was wanted. -ggdb1 and -gz come
+          # back with it.
+          STAMP=$(git show -s --format=%cd --date=format:%Y%m%d%H%M%S HEAD)
+          COMMON="-DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+                  -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
                   -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF
-                  -DFDB_RELEASE=ON"
+                  -DFDB_BUILDTIME=$STAMP"
           if [ "${{ matrix.os }}" = windows ]; then
             # No -G: CMake's default is the newest installed Visual Studio, and this runner
             # ships VS 18, so naming "Visual Studio 17 2022" named one that is not there.
@@ -209,6 +225,24 @@ jobs:
             cmake -S . -B build $COMMON -G Ninja -DCMAKE_BUILD_TYPE=Release \
               -DSSD_ROCKSDB_EXPERIMENTAL=OFF -DUSE_LD=LLD 2>&1 | tee configure.log
           fi
+
+      # The debug-symbol claim above, checked rather than argued. -ggdb on the actor files
+      # is what ran the runner out of memory, so if a future flag turns it back on this is
+      # where it should be caught -- not by a third exit 137 forty minutes into a build.
+      - name: Minimal debug symbols, and compressed
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          flags=$(grep -o -- '-ggdb1\?' build/compile_commands.json | sort -u | tr '\n' ' ')
+          gz=$(grep -c -- '-gz' build/compile_commands.json || true)
+          echo "debug flags in use: ${flags:-none}   -gz occurrences: $gz"
+          case "$flags" in
+            *"-ggdb "*|"-ggdb")
+              echo "::error::full debug symbols are on; ConfigureCompiler.cmake:185 was reached, which means FDB_RELEASE is set again"
+              exit 1 ;;
+          esac
+          [ "$gz" -gt 0 ] || { echo "::error::debug sections are not compressed; ConfigureCompiler.cmake:195 was skipped"; exit 1; }
+          echo "minimal symbols, compressed"
 
       # Each step stops the job, so a failure names the first thing that broke. --config Release
       # is what the Visual Studio generator needs and what Ninja ignores.
