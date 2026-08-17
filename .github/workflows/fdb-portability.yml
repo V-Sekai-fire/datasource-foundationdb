@@ -21,6 +21,16 @@ on:
   workflow_dispatch:
   push:
     branches: [portability-consensus]
+  # A pull request into the branch this workflow guards runs it too. Without this a change
+  # to the workflow could not be tested by the workflow: the fix for the exit 127 that
+  # killed run 31594247582 sat as a draft reporting "no checks", because nothing triggered
+  # on a pull request and there was therefore nothing for it to pass. A change to CI is the
+  # change that most needs CI.
+  #
+  # Scoped to that one base branch rather than every pull request, because this is three
+  # platforms building FoundationDB from source and the cost is real.
+  pull_request:
+    branches: [portability-consensus]
 
 permissions:
   contents: read
