@@ -52,7 +52,7 @@ jobs:
           - os: linux
             runner: ubuntu-24.04
             container: foundationdb/build:rockylinux9-latest
-            fdbserver_jobs: 2
+            build_jobs: 2
           # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
           # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
           # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
@@ -60,11 +60,11 @@ jobs:
           - os: macos
             runner: macos-14
             container: ""
-            fdbserver_jobs: 3
+            build_jobs: 3
           - os: windows
             runner: windows-2025
             container: ""
-            fdbserver_jobs: 4
+            build_jobs: 4
 
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
@@ -216,7 +216,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          cmake --build build --config Release --target fdb_c --parallel 2>&1 | tee build-fdb_c.log
+          cmake --build build --config Release --target fdb_c --parallel ${{ matrix.build_jobs }} 2>&1 | tee build-fdb_c.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdb_c.log | head -60
           exit $rc
@@ -225,7 +225,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          cmake --build build --config Release --target fdbcli --parallel 2>&1 | tee build-fdbcli.log
+          cmake --build build --config Release --target fdbcli --parallel ${{ matrix.build_jobs }} 2>&1 | tee build-fdbcli.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdbcli.log | head -60
           exit $rc
@@ -258,7 +258,7 @@ jobs:
             echo "note: /usr/bin/time absent; building without peak-RSS measurement"
           fi
           $TIME cmake --build build --config Release --target fdbserver \
-            --parallel ${{ matrix.fdbserver_jobs }} 2>&1 | tee build-fdbserver.log
+            --parallel ${{ matrix.build_jobs }} 2>&1 | tee build-fdbserver.log
           rc=${PIPESTATUS[0]}
           grep -iE "error|fatal|Could NOT find|cannot open" build-fdbserver.log | head -60
           grep -iE "maximum resident set size" build-fdbserver.log || true
@@ -294,7 +294,7 @@ jobs:
         run: |
           set +e
           cmake --build build --config Release \
-            --target fdbbackup fdbmonitor python_binding --parallel 2>&1 | tee build-pkgdeps.log
+            --target fdbbackup fdbmonitor python_binding --parallel ${{ matrix.build_jobs }} 2>&1 | tee build-pkgdeps.log
           rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then
             grep -iE "error|fatal|Could NOT find" build-pkgdeps.log | head -30; exit $rc
