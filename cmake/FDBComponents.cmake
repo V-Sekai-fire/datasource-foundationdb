@@ -28,7 +28,9 @@ set(CMAKE_REQUIRED_INCLUDES ${OPENSSL_INCLUDE_DIR})
 # Statically link OpenSSL to FDB, see
 #    https://cmake.org/cmake/help/v3.24/module/FindOpenSSL.html
 # Without the flags, OpenSSL is dynamically linked.
-set(OPENSSL_USE_STATIC_LIBS TRUE)
+if(NOT DEFINED OPENSSL_USE_STATIC_LIBS)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
 if (WIN32)
   set(OPENSSL_MSVC_STATIC_RT ON)
 endif()
@@ -177,7 +179,22 @@ endif()
 
 # TOML can download and install itself into the binary directory, so it should
 # always be available.
+# An unversioned find_package accepts any toml11, and this code is not written against any
+# toml11. It uses `toml::basic_value<toml::discard_comments, ...>`, which toml11 v4 removed:
+# the comment/table/array container types stopped being template parameters, so a v4 header
+# satisfies the find and then fails to compile with "no type named 'string_type' in
+# 'toml::discard_comments'" eight times over. Fedora 44 ships 4.4.0, which is how this was
+# found.
+#
+# The fallback below already states the version this code is written against, v3.4.0, so the
+# find is constrained to match rather than left to accept whatever the distribution has. A
+# system toml11 that is too new is now the same case as no system toml11: the pinned one is
+# downloaded, and the build works on a machine nobody tested it on.
 find_package(toml11 QUIET)
+if(toml11_FOUND AND toml11_VERSION VERSION_GREATER_EQUAL 4.0.0)
+  message(STATUS "Ignoring system toml11 ${toml11_VERSION}: this code needs the v3 API")
+  set(toml11_FOUND FALSE)
+endif()
 if(toml11_FOUND)
   add_library(toml11_target INTERFACE)
   target_link_libraries(toml11_target INTERFACE toml11::toml11)
