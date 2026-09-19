@@ -19,6 +19,11 @@ name: fdb portability
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: publish the built binaries to this release tag (blank publishes nothing)
+        required: false
+        default: ""
   push:
     branches: [portability-consensus]
   # A pull request into the branch this workflow guards runs it too. Without this a change
@@ -33,7 +38,7 @@ on:
     branches: [portability-consensus]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: fdb-portability-${{ github.ref }}
@@ -398,4 +403,44 @@ jobs:
             build/packages/*.pkg
             *.deb
             *.rpm
+
+      # Unstripped, fdbserver is 441 MB against upstream's 94 MB.
+      - name: Strip (linux, macos)
+        if: inputs.release_tag != '' && matrix.os != 'windows'
+        shell: bash
+        run: |
+          for f in build/bin/fdbserver build/bin/fdbcli build/lib/libfdb_c.so build/lib/libfdb_c.dylib; do
+            [ -f "$f" ] || continue
+            strip -S "$f" 2>/dev/null || strip --strip-unneeded "$f" 2>/dev/null || true
+            ls -l "$f"
+          done
+
+      # A release is one flat namespace and every build tree says "fdbserver".
+      - name: Publish to the release
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          case "${{ matrix.os }}" in
+            linux)   sfx="linux.x86_64";   lib="build/lib/libfdb_c.so";    libsfx="so"  ;;
+            macos)   sfx="macos.arm64";    lib="build/lib/libfdb_c.dylib"; libsfx="dylib" ;;
+            windows) sfx="windows.x86_64"; lib=""                        ; libsfx=""   ;;
+          esac
+          mkdir -p out
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            cp build/bin/Release/fdbserver.exe "out/fdbserver.$sfx.exe"
+            cp build/bin/Release/fdbcli.exe    "out/fdbcli.$sfx.exe"
+            cp build/lib/Release/fdb_c.dll     "out/fdb_c.$sfx.dll"
+          else
+            cp build/bin/fdbserver "out/fdbserver.$sfx"
+            cp build/bin/fdbcli    "out/fdbcli.$sfx"
+            cp "$lib"              "out/libfdb_c.$sfx.$libsfx"
+          fi
+          for p in build/packages/*.pkg build/packages/*.msi *.deb *.rpm; do
+            [ -f "$p" ] && cp "$p" out/ || true
+          done
+          ( cd out && sha256sum * > "SHA256SUMS.${{ matrix.os }}" )
+          gh release upload "${{ inputs.release_tag }}" out/* --clobber --repo "${{ github.repository }}"
           if-no-files-found: warn
