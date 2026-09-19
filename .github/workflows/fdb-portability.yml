@@ -415,7 +415,7 @@ jobs:
             ls -l "$f"
           done
 
-      # A release is one flat namespace and every build tree says "fdbserver".
+      # A release is one flat namespace for every build tree.
       - name: Publish to the release
         if: inputs.release_tag != ''
         shell: bash
