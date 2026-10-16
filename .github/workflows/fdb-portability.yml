@@ -63,7 +63,7 @@ jobs:
           # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
           # memory in the matrix.
           - os: macos
-            runner: macos-14
+            runner: macos-15
             container: ""
             build_jobs: 3
           - os: windows
