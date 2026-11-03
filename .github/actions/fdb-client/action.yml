@@ -45,14 +45,22 @@ runs:
         Start-Process msiexec -ArgumentList '/a', (Join-Path $dir 'foundationdb-7.3.79-SNAPSHOT-x64.msi'), '/qn', "TARGETDIR=$target" -Wait -NoNewWindow
         if (-not (Test-Path (Join-Path $target 'PFiles/foundationdb/include/foundationdb/fdb_c.h'))) { throw 'fdb_c.h missing after unpacking the installer' }
 
+    - name: msiextract from pixi
+      if: runner.os == 'Linux'
+      uses: prefix-dev/setup-pixi@v0.11.3
+      with:
+        manifest-path: ${{ github.action_path }}/pixi.toml
+        locked: true
+        cache: true
+
     - name: Unpack on Linux
       if: runner.os == 'Linux'
       shell: bash
       run: |
         set -eu
-        sudo apt-get install -y msitools
+        manifest="$GITHUB_ACTION_PATH/pixi.toml"
         cd "$RUNNER_TEMP/fdb-client"
-        msiextract -C root foundationdb-7.3.79-SNAPSHOT-x64.msi > /dev/null
+        pixi run --manifest-path "$manifest" --locked msiextract -C root foundationdb-7.3.79-SNAPSHOT-x64.msi > /dev/null
         mkdir -p lib
         cp libfdb_c.linux.x86_64.so lib/libfdb_c.so
 
