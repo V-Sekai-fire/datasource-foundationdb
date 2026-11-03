@@ -50,6 +50,12 @@ function(compile_boost)
     #  > no template named 'unary_function' in namespace 'std'; did you mean '__unary_function'?
     list(APPEND BOOST_COMPILER_FLAGS -D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION)
   endif()
+  # b2 runs its own compiler and never sees CMAKE_OSX_DEPLOYMENT_TARGET, so without this Boost
+  # targets the build host's macOS and libfdb_c links objects newer than its own minimum.
+  if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+    list(APPEND BOOST_COMPILER_FLAGS -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+    list(APPEND BOOST_LINK_FLAGS -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+  endif()
 
   # Update the user-config.jam
   set(BOOST_ADDITIONAL_COMPILE_OPTIONS "")
