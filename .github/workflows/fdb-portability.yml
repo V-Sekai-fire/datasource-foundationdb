@@ -462,4 +462,23 @@ jobs:
           done
           ( cd out && sha256sum * > "SHA256SUMS.${{ matrix.os }}" )
           gh release upload "${{ inputs.release_tag }}" out/* --clobber --repo "${{ github.repository }}"
-          if-no-files-found: warn
+
+  # One SHA256SUMS over every platform's files, the name consumers such as the fdb-client action
+  # read. Each build job publishes its own SHA256SUMS.<os>; this joins them once all three have.
+  checksums:
+    needs: build
+    if: inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Join the per-platform sums into SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release download "${{ inputs.release_tag }}" --repo "${{ github.repository }}" --pattern 'SHA256SUMS.*' --dir sums
+          for os in linux macos windows; do test -f "sums/SHA256SUMS.$os"; done
+          cat sums/SHA256SUMS.* | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "${{ inputs.release_tag }}" SHA256SUMS --clobber --repo "${{ github.repository }}"
