@@ -128,19 +128,21 @@ ACTOR Future<Void> quicScenario(QuicRunCfg cfg, QuicResult* res) {
 
 	ssock->bind(NetworkAddress::parse("127.0.0.1:0"));
 	csock->bind(NetworkAddress::parse("127.0.0.1:0"));
-	if (!server.initServer(cfg.cert.c_str(), cfg.key.c_str(), "flow-echo")) {
+	if (!(cfg.wt ? server.initServerWt(cfg.cert.c_str(), cfg.key.c_str())
+	             : server.initServer(cfg.cert.c_str(), cfg.key.c_str(), "flow-echo"))) {
 		res->setupFailed = true;
 		res->setupError = "server init failed (certificate or key not loaded)";
 		return Void();
 	}
-	if (!client.initClient(cfg.root.c_str(), "flow-echo")) {
+	if (!(cfg.wt ? client.initClientWt(cfg.root.c_str()) : client.initClient(cfg.root.c_str(), "flow-echo"))) {
 		res->setupFailed = true;
 		res->setupError = "client init failed";
 		return Void();
 	}
 	server.setWake(&fireTrigger, &serverWake);
 	client.setWake(&fireTrigger, &clientWake);
-	if (!client.connect(toQuicAddr(ssock->localAddress()), cfg.sni.c_str())) {
+	if (!(cfg.wt ? client.connectWt(toQuicAddr(ssock->localAddress()), cfg.sni.c_str(), cfg.badpath ? "/nope" : "/echo")
+	             : client.connect(toQuicAddr(ssock->localAddress()), cfg.sni.c_str()))) {
 		res->setupFailed = true;
 		res->setupError = "client connect refused: " + client.connectError;
 		return Void();
@@ -155,7 +157,8 @@ ACTOR Future<Void> quicScenario(QuicRunCfg cfg, QuicResult* res) {
 	// Wait for the handshake to finish or fail (10 s at most).
 	loop {
 		wait(delay(0.005));
-		if (client.stats.ready || client.stats.closed || ++i > 2000)
+		client.snapshotState();
+		if (client.stats.ready || client.stats.closed || client.stats.refused > 0 || ++i > 2000)
 			break;
 	}
 	if (client.stats.ready) {
@@ -193,7 +196,7 @@ ACTOR Future<Void> quicStopAfter(Future<Void> f) {
 
 int main(int argc, char** argv) {
 	if (argc < 6) {
-		std::fprintf(stderr, "usage: flow_quic_echo CERT KEY ROOT SNI positive|control [COUNT] [BYTES]\n");
+		std::fprintf(stderr, "usage: flow_quic_echo CERT KEY ROOT SNI positive|control|badpath [COUNT] [BYTES] [wt]\n");
 		return 2;
 	}
 	QuicRunCfg cfg;
@@ -202,6 +205,8 @@ int main(int argc, char** argv) {
 	cfg.root = argv[3];
 	cfg.sni = argv[4];
 	cfg.control = std::strcmp(argv[5], "control") == 0;
+	cfg.badpath = std::strcmp(argv[5], "badpath") == 0;
+	cfg.wt = argc > 8 && std::strcmp(argv[8], "wt") == 0;
 	if (argc > 6)
 		cfg.count = std::atoi(argv[6]);
 	if (argc > 7)
