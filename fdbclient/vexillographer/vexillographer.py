@@ -68,7 +68,7 @@ HEADER_NOTICE_C = textwrap.dedent(
      *
      * This source file is part of the FoundationDB open source project
      *
-     * Copyright 2013-2024 Apple Inc. and the FoundationDB project authors
+     * Copyright 2013-2018 Apple Inc. and the FoundationDB project authors
      *
      * Licensed under the Apache License, Version 2.0 (the 'License');
      * you may not use this file except in compliance with the License.
@@ -151,27 +151,6 @@ LICENSE_RB = textwrap.dedent(
     """
 ).strip()
 
-LICENSE_JAVA = textwrap.dedent(
-    """
-    /*
-     * FoundationDB Java API
-     * Copyright (c) 2013-2024 Apple Inc.
-     *
-     * Licensed under the Apache License, Version 2.0 (the "License");
-     * you may not use this file except in compliance with the License.
-     * You may obtain a copy of the License at
-     *
-     *     http://www.apache.org/licenses/LICENSE-2.0
-     *
-     * Unless required by applicable law or agreed to in writing, software
-     * distributed under the License is distributed on an "AS IS" BASIS,
-     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-     * See the License for the specific language governing permissions and
-     * limitations under the License.
-     */
-    """
-).strip()
-
 
 def parse_options(xml_path: pathlib.Path, binding: str) -> List[Option]:
     tree = ET.parse(xml_path)
@@ -206,20 +185,23 @@ def indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line if line else prefix for line in text.split("\n"))
 
 
-def write_c(file_path: pathlib.Path, options: Iterable[Option]) -> None:
-    def option_line(opt: Option, prefix: str) -> str:
-        parameter_comment = ""
-        if opt.scope.name.endswith("Option"):
-            hidden_note = (
-                "This is a hidden parameter and should not be used directly by applications."
-                if opt.hidden
-                else ""
-            )
-            parameter_comment = f"    /* Parameter: {opt.parameter_comment()} {hidden_note}*/\n"
-        return f"{parameter_comment}    /* {opt.comment} */\n    {prefix}{opt.name.upper()}={opt.code}"
+def c_line(opt: Option, indent_str: str, prefix: str) -> str:
+    """c.getCLine of the C# writer: comment, then the parameter comment, then the enumerator."""
+    parameter_comment = ""
+    if opt.scope.name.endswith("Option"):
+        hidden_note = (
+            "This is a hidden parameter and should not be used directly by applications."
+            if opt.hidden
+            else ""
+        )
+        parameter_comment = f"{indent_str}/* Parameter: {opt.parameter_comment()} {hidden_note}*/\n"
+    return f"{indent_str}/* {opt.comment} */\n{parameter_comment}{indent_str}{prefix}{opt.name.upper()}={opt.code}"
 
+
+def write_c(file_path: pathlib.Path, options: Iterable[Option]) -> None:
+    options = list(options)
     with file_path.open("w", newline="\n") as handle:
-        handle.write(HEADER_NOTICE_C + "\n")
+        handle.write(HEADER_NOTICE_C + "\n\n")
         for scope in Scope:
             scoped = [o for o in options if o.scope is scope]
             if not scoped:
@@ -229,7 +211,7 @@ def write_c(file_path: pathlib.Path, options: Iterable[Option]) -> None:
                 ]
             prefix = f"FDB_{scope.description}_"
             handle.write("typedef enum {\n")
-            handle.write(",\n\n".join(option_line(o, prefix) for o in scoped))
+            handle.write(",\n\n".join(c_line(o, "    ", prefix) for o in scoped))
             handle.write(f"\n}} FDB{scope.name};\n\n")
         handle.write("#endif\n")
 
@@ -241,7 +223,7 @@ def write_cpp(base_path: pathlib.Path, options: Iterable[Option]) -> None:
     source_path = base_path.parent / (base_path.name + ".cpp")
 
     def option_enum(opt: Option, indent_level: str) -> str:
-        return f"{indent_level}/* {opt.comment} */\n{indent_level}{opt.name.upper()}={opt.code}"
+        return c_line(opt, indent_level, "")
 
     def option_info(opt: Option, indent_level: str, struct_name: str) -> str:
         return (
@@ -265,7 +247,7 @@ def write_cpp(base_path: pathlib.Path, options: Iterable[Option]) -> None:
             header.write("private:\n")
             header.write("\tstatic void init();\n")
             header.write("};\n\n")
-        header.write("#endif\n")
+        header.write("\n#endif\n")
 
     with source_path.open("w", newline="\n") as source:
         source.write('#include "fdbclient/FDBOptions.g.h"\n\n')
@@ -285,7 +267,7 @@ def write_python(file_path: pathlib.Path, options: Iterable[Option]) -> None:
         ParamType.Bytes: "type(b'')",
     }
     with file_path.open("w", newline="\n") as handle:
-        handle.write(LICENSE_PY + "\n")
+        handle.write(LICENSE_PY + "\n\n")
         for scope in Scope:
             scoped = [o for o in options if o.scope is scope and not o.hidden]
             handle.write(f"{scope.name} = {{\n")
@@ -309,9 +291,8 @@ def write_ruby(file_path: pathlib.Path, options: Iterable[Option]) -> None:
     with file_path.open("w", newline="\n") as handle:
         handle.write(LICENSE_RB + "\n")
         for scope in Scope:
-            if scope is Scope.ErrorPredicate:
-                continue
-            scoped = [o for o in options if o.scope is scope and not o.hidden]
+            # The C# writer still opens an (empty) ErrorPredicate hash, so it is written here too.
+            scoped = [o for o in options if o.scope is scope and not o.hidden and scope is not Scope.ErrorPredicate]
             handle.write(f"  @@{scope.name} = {{\n")
             lines = []
             for o in scoped:
@@ -325,72 +306,9 @@ def write_ruby(file_path: pathlib.Path, options: Iterable[Option]) -> None:
 
 
 def write_java(file_path: pathlib.Path, options: Iterable[Option]) -> None:
-    with file_path.open("w", newline="\n") as handle:
-        handle.write(LICENSE_JAVA + "\n")
-        handle.write("package com.apple.foundationdb;\n\n")
-        handle.write("@SuppressWarnings(\"unused\")\n")
-        handle.write("public class FDBOptions {\n")
-        handle.write("    private FDBOptions() { }\n")
-
-        # Enums
-        for scope in Scope:
-            scoped = [o for o in options if o.scope is scope]
-            enum_name = scope.name
-            handle.write(f"    public enum {enum_name} {{\n")
-            handle.write(",\n".join(
-                f"        {o.name}({o.code})" for o in scoped
-            ))
-            handle.write(";\n\n")
-            handle.write("        private final int code;\n")
-            handle.write(f"        {enum_name}(int c) {{ this.code = c; }}\n")
-            handle.write("        public int code() { return this.code; }\n")
-            handle.write("    }\n\n")
-
-        # Options info helper
-        handle.write("    static final class OptionInfo {\n")
-        handle.write("        enum ParamType { NONE, INT, STRING, BYTES }\n")
-        handle.write("        public final String description;\n")
-        handle.write("        public final String parameterDescription;\n")
-        handle.write("        public final boolean hasParameter;\n")
-        handle.write("        public final boolean isDeprecated;\n")
-        handle.write("        public final boolean isPersistent;\n")
-        handle.write("        public final boolean isSensitive;\n")
-        handle.write("        public final int defaultFor;\n")
-        handle.write("        public final ParamType parameterType;\n")
-        handle.write("        OptionInfo(String desc, String paramDesc, boolean hasParam, boolean deprecated, boolean persistent, boolean sensitive, int defaultFor, ParamType parameterType) {\n")
-        handle.write("            this.description = desc;\n")
-        handle.write("            this.parameterDescription = paramDesc;\n")
-        handle.write("            this.hasParameter = hasParam;\n")
-        handle.write("            this.isDeprecated = deprecated;\n")
-        handle.write("            this.isPersistent = persistent;\n")
-        handle.write("            this.isSensitive = sensitive;\n")
-        handle.write("            this.defaultFor = defaultFor;\n")
-        handle.write("            this.parameterType = parameterType;\n")
-        handle.write("        }\n")
-        handle.write("    }\n\n")
-
-        # Maps
-        handle.write("    static final class OptionInfoMap {\n")
-        for scope in Scope:
-            scoped = [o for o in options if o.scope is scope]
-            map_entries_list = []
-            for o in scoped:
-                map_entries_list.append(
-                    "            new OptionInfo(\"{}\", \"{}\", {}, {}, {}, {}, {}, OptionInfo.ParamType.{})".format(
-                        o.comment,
-                        o.parameter_comment(),
-                        str(o.param_desc is not None).lower(),
-                        str(o.is_deprecated()).lower(),
-                        str(o.persistent).lower(),
-                        str(o.sensitive).lower(),
-                        o.default_for,
-                        o.param_type.value.upper(),
-                    )
-                )
-            map_entries = ",\n".join(map_entries_list)
-            handle.write(f"        static final OptionInfo[] {scope.name} = new OptionInfo[] {{\n{map_entries}\n        }};\n\n")
-        handle.write("    }\n")
-        handle.write("}\n")
+    # The C# writer emits one file per scope into a directory, with CR line ends. That is not ported, and an
+    # approximation would be worse than none: build with FDB_USE_CSHARP_TOOLS=ON, or with WITH_JAVA_BINDING=OFF.
+    raise SystemExit("vexillographer.py: the java writer is not ported (use the C# tools: FDB_USE_CSHARP_TOOLS=ON)")
 
 
 WRITERS = {
