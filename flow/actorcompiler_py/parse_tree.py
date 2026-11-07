@@ -198,6 +198,20 @@ class ThrowStatement(Statement):
 
 
 @dataclass
+class Declaration:
+    type: str = ""
+    name: str = ""
+    comment: str = ""
+
+
+@dataclass
+class Descr:
+    name: str = ""
+    super_class_list: Optional[str] = None
+    body: List[Declaration] = field(default_factory=list)
+
+
+@dataclass
 class Actor:
     attributes: List[str] = field(default_factory=list)
     return_type: Optional[str] = None

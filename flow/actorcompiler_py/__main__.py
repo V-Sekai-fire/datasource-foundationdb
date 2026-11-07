@@ -46,7 +46,6 @@ def main() -> int:
     input_path = Path(args.input)
     output_path = Path(args.output)
     output_tmp = output_path.with_suffix(output_path.suffix + ".tmp")
-    output_uid = output_path.with_suffix(output_path.suffix + ".uid")
 
     policy = ErrorMessagePolicy()
     policy.disable_diagnostics = args.disable_diagnostics
@@ -65,10 +64,6 @@ def main() -> int:
             parser.write(out_file, str(output_path).replace("\\", "/"))
         overwrite_by_move(output_path, output_tmp)
 
-        with output_tmp.open("w", newline="\n") as uid_file:
-            for (hi, lo), value in parser.uid_objects.items():
-                uid_file.write(f"{hi}|{lo}|{value}\n")
-        overwrite_by_move(output_uid, output_tmp)
 
         return 0
     except ActorCompilerError as exc:

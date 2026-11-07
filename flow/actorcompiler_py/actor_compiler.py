@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -239,23 +238,9 @@ class ActorCompiler:
         self.choose_groups = 0
         self.when_count = 0
         self.this = ""
-        self.uid_objects: Dict[Tuple[int, int], str] = {}
         self.functions: Dict[str, Function] = {}
         self.iterators: Dict[str, int] = {}
         self.find_state()
-
-    def byte_to_long(self, data: bytes) -> int:
-        result = 0
-        for b in data:
-            result += b
-            result <<= 8
-        return result & ((1 << 64) - 1)
-
-    def get_uid_from_string(self, value: str) -> Tuple[int, int]:
-        digest = hashlib.sha256(value.encode("utf-8")).digest()
-        first = self.byte_to_long(digest[:8])
-        second = self.byte_to_long(digest[8:16])
-        return (first, second)
 
     def writeActorFunction(self, writer, full_return_type: str) -> None:
         self.writeTemplate(writer)
@@ -303,29 +288,16 @@ class ActorCompiler:
         writer.write("public:\n")
         writer.write(f"\tusing FastAllocated<{self.full_class_name}>::operator new;\n")
         writer.write(f"\tusing FastAllocated<{self.full_class_name}>::operator delete;\n")
-        actor_identifier_key = f"{self.source_file}:{self.actor.name}"
-        uid = self.get_uid_from_string(actor_identifier_key)
-        self.uid_objects[(uid[0], uid[1])] = actor_identifier_key
-        writer.write(
-            f"\tstatic constexpr ActorIdentifier __actorIdentifier = UID({uid[0]}UL, {uid[1]}UL);\n"
-        )
-        writer.write("\tActiveActorHelper activeActorHelper;\n")
         writer.write("#pragma clang diagnostic push\n")
         writer.write('#pragma clang diagnostic ignored "-Wdelete-non-virtual-dtor"\n')
         if self.actor.return_type is not None:
-            writer.write("    void destroy() override {\n")
-            writer.write("        activeActorHelper.~ActiveActorHelper();\n")
             writer.write(
-                f"        static_cast<Actor<{self.actor.return_type}>*>(this)->~Actor();\n"
+                f"\tvoid destroy() override {{ ((Actor<{self.actor.return_type}>*)this)->~Actor(); operator delete(this); }}\n"
             )
-            writer.write("        operator delete(this);\n")
-            writer.write("    }\n")
         else:
-            writer.write("    void destroy() {{\n")
-            writer.write("        activeActorHelper.~ActiveActorHelper();\n")
-            writer.write("        static_cast<Actor<void>*>(this)->~Actor();\n")
-            writer.write("        operator delete(this);\n")
-            writer.write("    }}\n")
+            writer.write(
+                "\tvoid destroy() {{ ((Actor<void>*)this)->~Actor(); operator delete(this); }}\n"  # C# writes the doubled braces literally here
+            )
         writer.write("#pragma clang diagnostic pop\n")
         for cb in self.callbacks:
             writer.write(f"friend struct {cb.type};\n")
@@ -431,7 +403,7 @@ class ActorCompiler:
         writer.write("};\n")
         self.writeActorClass(writer, full_state, body)
         if self.is_top_level and self.actor.name_space is None:
-            writer.write("} // namespace\n")
+            writer.write("}\n")
         self.writeActorFunction(writer, full_return_type)
         if self.actor.test_case_parameters is not None:
             writer.write(
@@ -448,18 +420,6 @@ class ActorCompiler:
                 self.thisAddress,
                 index,
             )
-        block_identifier = self.get_uid_from_string(fun.name)
-        fun.write_line("#ifdef WITH_ACAC")
-        fun.write_line(
-            "static constexpr ActorBlockIdentifier __identifier = UID({0}UL, {1}UL);",
-            block_identifier[0],
-            block_identifier[1],
-        )
-        fun.write_line(
-            "ActorExecutionContextHelper __helper(static_cast<{0}*>(this)->activeActorHelper.actorID, __identifier);",
-            self.class_name,
-        )
-        fun.write_line("#endif // WITH_ACAC")
 
     def probe_exit(self, fun: Function, name: str, index: int = -1) -> None:
         if self.generate_probes:
@@ -718,7 +678,7 @@ class ActorCompiler:
         cancel_func.specifiers = "override"
         cancel_func.indent(self.code_indent)
         cancel_func.write_line("auto wait_state = this->actor_wait_state;")
-        cancel_func.write_line("this->actor_wait_state = ACTOR_WAIT_STATE_CANCELLED;")
+        cancel_func.write_line("this->actor_wait_state = -1;")
         cancel_func.write_line("switch (wait_state) {")
         last_group = -1
         for cb in sorted(self.callbacks, key=lambda c: c.callback_group):
@@ -749,12 +709,11 @@ class ActorCompiler:
             )
         )
         constructor.write_line(
-            "   {0}({1}),".format(
+            "   {0}({1})".format(
                 full_state_class_name,
                 ", ".join(p.name for p in self.actor.parameters),
             )
         )
-        constructor.write_line("   activeActorHelper(__actorIdentifier)")
         constructor.indent(-1)
         constructor.write_line("{")
         constructor.indent(+1)
@@ -1345,7 +1304,7 @@ class ActorCompiler:
         exit_func = self.get_function("exitChoose", "", [])
         exit_func.return_type = "void"
         exit_func.write_line(
-            "if (actorWaitStateIsWaiting({0}->actor_wait_state)) {0}->actor_wait_state = ACTOR_WAIT_STATE_NOT_WAITING;",
+            "if ({0}->actor_wait_state > 0) {0}->actor_wait_state = 0;",
             self.this,
         )
         for choice in choices:
@@ -1465,30 +1424,19 @@ class ActorCompiler:
         for choice in choices:
             get_func = "pop" if choice["Stmt"].wait.is_wait_next else "get"
             self.line_numberFunction(cx.target, choice["Stmt"].wait.first_source_line)
-            if choice["Stmt"].wait.is_wait_next:
-                cx.target.write_line(
-                    "auto {0} = {1};",
-                    choice["Future"],
-                    choice["Stmt"].wait.future_expression,
-                )
-                cx.target.write_line(
-                    'static_assert(std::is_same<decltype({0}), FutureStream<{1}>>::value || std::is_same<decltype({0}), ThreadFutureStream<{1}>>::value, "invalid type");',
-                    choice["Future"],
-                    choice["Stmt"].wait.result.type,
-                )
-            else:
-                cx.target.write_line(
-                    "StrictFuture<{0}> {1} = {2};",
-                    choice["Stmt"].wait.result.type,
-                    choice["Future"],
-                    choice["Stmt"].wait.future_expression,
-                )
+            cx.target.write_line(
+                "{2}<{3}> {0} = {1};",
+                choice["Future"],
+                choice["Stmt"].wait.future_expression,
+                "FutureStream" if choice["Stmt"].wait.is_wait_next else "StrictFuture",
+                choice["Stmt"].wait.result.type,
+            )
             if first_choice:
                 first_choice = False
                 self.line_numberFunction(cx.target, stmt.first_source_line)
                 if self.actor.is_cancellable():
                     cx.target.write_line(
-                        "if (actorWaitStateIsCancelled({1}->actor_wait_state)) return {0};",
+                        "if ({1}->actor_wait_state < 0) return {0};",
                         cx.catch_f_err.call(
                             "actor_cancelled()", self.adjust_loop_depth(cx.try_loop_depth)
                         ),
@@ -1515,3 +1463,52 @@ class ActorCompiler:
         cx.target.write_line("loopDepth = 0;")
         if not reachable:
             cx.unreachable()
+
+
+class DescrCompiler:
+    """Writes the Descriptor<> specialisation and the plain struct for a DESCR block."""
+
+    def __init__(self, descr, brace_depth: int) -> None:
+        self.descr = descr
+        self.indent = "\t" * brace_depth
+
+    def write(self, writer) -> int:
+        d = self.descr
+        m = self.indent
+        lines = 0
+
+        def w(text: str) -> None:
+            writer.write(text + "\n")
+
+        w(m + "template<> struct Descriptor<struct " + d.name + "> {")
+        w(m + '\tstatic StringRef typeName() { return "' + d.name + '"_sr; }')
+        w(m + "\ttypedef " + d.name + " type;")
+        lines += 3
+        for dec in d.body:
+            w(m + "\tstruct " + dec.name + "Descriptor {")
+            w(m + '\t\tstatic StringRef name() { return "' + dec.name + '"_sr; }')
+            w(m + '\t\tstatic StringRef typeName() { return "' + dec.type + '"_sr; }')
+            w(m + '\t\tstatic StringRef comment() { return "' + dec.comment + '"_sr; }')
+            w(m + "\t\ttypedef " + dec.type + " type;")
+            w(m + "\t\tstatic inline type get(" + d.name + "& from);")
+            w(m + "\t};")
+            lines += 7
+        writer.write(m + "\ttypedef std::tuple<")
+        writer.write(",".join(dec.name + "Descriptor" for dec in d.body))
+        writer.write("> fields;\n")
+        w(m + "\ttypedef make_index_sequence_impl<0, index_sequence<>, std::tuple_size<fields>::value>::type field_indexes;")
+        w(m + "};")
+        if d.super_class_list is not None:
+            w(m + "struct " + d.name + " : " + d.super_class_list + " {")
+        else:
+            w(m + "struct " + d.name + " {")
+        lines += 4
+        for dec in d.body:
+            w(m + "\t" + dec.type + " " + dec.name + "; //" + dec.comment)
+            lines += 1
+        w(m + "};")
+        lines += 1
+        for dec in d.body:
+            w(m + dec.type + " Descriptor<" + d.name + ">::" + dec.name + "Descriptor::get(" + d.name + "& from) { return from." + dec.name + "; }")
+            lines += 1
+        return lines

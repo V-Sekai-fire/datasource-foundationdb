@@ -245,7 +245,6 @@ function(add_flow_target)
             COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${CMAKE_SOURCE_DIR}/flow"
                     ${Python3_EXECUTABLE} -m actorcompiler_py "${in_file}" "${out_file}" ${actor_compiler_flags}
             DEPENDS "${in_file}" ${ACTORCOMPILER_PY_SRCS}
-            BYPRODUCTS "${out_file}.uid"
             COMMENT "Compile actor: ${src}" VERBATIM)
         elseif(WIN32)
           add_custom_command(OUTPUT "${out_file}"

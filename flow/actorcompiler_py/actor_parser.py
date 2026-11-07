@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Tuple
 
 from .errors import ActorCompilerError
-from .actor_compiler import ActorCompiler
+from .actor_compiler import ActorCompiler, DescrCompiler
 
 from .parse_tree import (
+    Declaration,
+    Descr,
     Actor,
     BreakStatement,
     ChooseStatement,
@@ -269,7 +271,6 @@ class ActorParser:
         self.generate_probes = generate_probes
         self.tokens = [Token(value=t) for t in self.tokenize(text)]
         self.line_numbers_enabled = True
-        self.uid_objects: Dict[Tuple[int, int], str] = {}
         self.token_array = self.tokens
         self.count_parens()
 
@@ -349,7 +350,7 @@ class ActorParser:
             tok = self.tokens[i]
             if tok.source_line == 0:
                 raise RuntimeError("Invalid source line (0)")
-            if tok.value in ("ACTOR", "SWIFT_ACTOR", "TEST_CASE"):
+            if tok.value in ("ACTOR", "TEST_CASE"):
                 actor = self.parse_actor(i)
                 end = self._parse_end
                 if classContextStack:
@@ -365,8 +366,6 @@ class ActorParser:
                     self.generate_probes,
                 )
                 actorCompiler.write(actor_writer)
-                for key, value in actorCompiler.uid_objects.items():
-                    self.uid_objects.setdefault(key, value)
                 actor_lines = actor_writer.getvalue().split("\n")
                 hasLineNumber = False
                 hadLineNumber = True
@@ -388,6 +387,16 @@ class ActorParser:
                     outLine += 1
                 i = end
                 if i < len(self.tokens) and self.line_numbers_enabled:
+                    writer.write(
+                        f'#line {self.tokens[i].source_line} "{self.source_file}"\n'
+                    )
+                    outLine += 1
+            elif tok.value == "DESCR":
+                descr, end = self.parse_descr(i)
+                lines = DescrCompiler(descr, tok.brace_depth).write(writer)
+                i = end
+                outLine += lines
+                if i != len(self.tokens) and self.line_numbers_enabled:
                     writer.write(
                         f'#line {self.tokens[i].source_line} "{self.source_file}"\n'
                     )
@@ -415,6 +424,70 @@ class ActorParser:
     def range(self, begin: int, end: int) -> TokenRange:
         return TokenRange(self.tokens, begin, end)
 
+    def parse_descr_heading(self, descr: Descr, toks: TokenRange) -> None:
+        toks.first(lambda t: not t.is_whitespace).ensure(
+            "non-struct DESCR!", lambda t: t.value == "struct"
+        )
+        toks = toks.skipWhile(lambda t: t.is_whitespace).skip(1)
+        toks = toks.skipWhile(lambda t: t.is_whitespace)
+        colon = next((t for t in toks if t.value == ":"), None)
+        if colon is not None:
+            descr.super_class_list = self.str(
+                self.range(colon.position + 1, toks.end_pos)
+            ).strip()
+            toks = self.range(toks.begin_pos, colon.position)
+        descr.name = self.str(toks).strip()
+
+    def parse_descr_declaration(self, toks: TokenRange, declarations) -> None:
+        delim = toks.first(lambda t: t.value == ";")
+        name_range = (
+            self.range(toks.begin_pos, delim.position)
+            .Revskip_while(lambda t: t.is_whitespace)
+            .Revtake_while(lambda t: not t.is_whitespace)
+        )
+        type_range = self.range(toks.begin_pos, name_range.begin_pos)
+        comment_range = self.range(delim.position + 1, toks.end_pos)
+        declarations.append(
+            Declaration(
+                type=self.str(type_range).strip(),
+                name=self.str(name_range).strip(),
+                comment=self.str(comment_range).strip().lstrip("/"),
+            )
+        )
+
+    def parse_descr_code_block(self, toks: TokenRange):
+        declarations = []
+        while True:
+            delim = next((t for t in toks if t.value == ";"), None)
+            if delim is None:
+                break
+            pos = delim.position + 1
+            potential = self.range(pos, toks.end_pos).skipWhile(
+                lambda t: t.value in ("\t", " ")
+            )
+            if not potential.is_empty() and potential.first().value.startswith("//"):
+                pos = potential.first().position + 1
+            self.parse_descr_declaration(self.range(toks.begin_pos, pos), declarations)
+            toks = self.range(pos, toks.end_pos)
+        if not toks.all_match(lambda t: t.is_whitespace):
+            raise ActorCompilerError(
+                toks.first(lambda t: not t.is_whitespace).source_line,
+                "Trailing unterminated statement in code block",
+            )
+        return declarations
+
+    def parse_descr(self, pos: int):
+        descr = Descr()
+        toks = self.range(pos + 1, len(self.tokens))
+        heading = toks.take_while(lambda t: t.value != "{")
+        base_depth = toks.first().brace_depth
+        body = self.range(heading.end_pos + 1, len(self.tokens)).take_while(
+            lambda t: t.brace_depth > base_depth or t.value == ";"
+        )
+        self.parse_descr_heading(descr, heading)
+        descr.body = self.parse_descr_code_block(body)
+        return descr, body.end_pos + 1
+
     def parse_actor(self, pos: int) -> Actor:
         token = self.tokens[pos]
         actor = Actor()
@@ -425,7 +498,7 @@ class ActorParser:
         actor.is_forward_declaration = toSemicolon.length() < heading.length()
         if actor.is_forward_declaration:
             heading = toSemicolon
-            if token.value in ("ACTOR", "SWIFT_ACTOR"):
+            if token.value in ("ACTOR",):
                 self.parse_actorHeading(actor, heading)
             else:
                 token.ensure("ACTOR expected!", lambda _: False)
@@ -434,7 +507,7 @@ class ActorParser:
             body = self.range(heading.end_pos + 1, len(self.tokens)).take_while(
                 lambda t: t.brace_depth > toks.first().brace_depth
             )
-            if token.value in ("ACTOR", "SWIFT_ACTOR"):
+            if token.value in ("ACTOR",):
                 self.parse_actorHeading(actor, heading)
             elif token.value == "TEST_CASE":
                 self.parse_test_caseHeading(actor, heading)
