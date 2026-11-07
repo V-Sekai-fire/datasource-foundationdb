@@ -23,11 +23,13 @@ Windows, x86_64, mbedTLS, a path MTU other than loopback, h3zero / WebTransport 
 
 Same driver; `BUILD_HTTP` on, `picohttp-core` linked, ALPN `h3`. The server serves a WebTransport CONNECT at `/echo` and echoes every session datagram; the client opens the session and counts the echoes. Run with the trailing `wt` argument.
 
-| Run | Result |
-| --- | --- |
-| positive, 192 datagrams of 1200 bytes at 64 Hz | PASS: 192 of 192 echoed through the session |
-| control, client trusts `badcert.pem` | PASS: handshake refused, TLS alert 48, 0 datagrams |
-| badpath, CONNECT to `/nope` | PASS: refused once, session not opened, 0 datagrams |
-| rung A positive again (no `wt`) | PASS: 192 of 192 |
+| Run | Runs | Result |
+| --- | --- | --- |
+| positive, 192 datagrams of 1200 bytes at 64 Hz | 3 | 3 of 3 PASS: 192 of 192 echoed through the session |
+| control, client trusts `badcert.pem` | 3 | 3 of 3 PASS: handshake refused, TLS alert 48, 0 datagrams |
+| badpath, CONNECT to `/nope` | 3 | 3 of 3 PASS: refused once, session not opened, 0 datagrams |
+| rung A positive (no `wt`) | 3 | 3 of 3 PASS: 192 of 192 |
 
-Each Rung B row ran once. The badpath control exercises the HTTP/3 layer, because TLS and QUIC succeed there. Same limits as rung A: aarch64 Linux container, loopback, OpenSSL, no Windows. The diagnostic counters and `FLOWQUIC_DEBUG` are still in the source.
+The badpath control exercises the HTTP/3 layer, because TLS and QUIC succeed there. The socket counters stay in the output (client 396 sent, server 396 received in the positive run), and a sender that is not IPv4 is counted and reported, not thrown on. `FLOWQUIC_DEBUG=1` turns on picoquic's debug output.
+
+Limits: aarch64 Linux container, loopback, OpenSSL, no Windows. The only build path tried is `FLOWQUIC_PICOQUIC_DIR` pointing at a local checkout of a6f85e8a; the `FetchContent` fallback has not run. A WebTransport datagram adds the session id and a datagram frame header to the 1200-byte payload, so the packet on the wire is a little over 1200 bytes (not measured). Loopback reported a 1440-byte MTU; a real path decides what the entity view can be.

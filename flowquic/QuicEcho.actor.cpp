@@ -1,7 +1,6 @@
 // Rung A: picoquic driven by Flow's Net2 over IUDPSocket. Client and server share one process and one loop.
 // Flow owns the sockets and the clock; picoquic is a state machine fed by feed() and drained by pull().
 #include <cstdio>
-#include <exception>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -45,29 +44,9 @@ static NetworkAddress toNetworkAddress(QuicAddr q) {
 
 // Socket-level counters, to tell a packet lost between the sockets from one picoquic dropped after feed().
 struct IoCount {
-	uint64_t sendDone = 0, sendBytes = 0, recvDone = 0, recvBytes = 0, iters = 0, nextHits = 0, timerHits = 0, wakeHits = 0;
+	uint64_t sendDone = 0, sendBytes = 0, recvDone = 0, recvBytes = 0, nonV4 = 0;
 };
 static IoCount g_io[2]; // 0 = server socket, 1 = client socket
-
-static std::string futureState(const Future<Void>& f) {
-	if (!f.isReady())
-		return "running";
-	return f.isError() ? std::string("ended with error ") + f.getError().name() : std::string("returned");
-}
-
-// Plain C++ (not an actor): a std exception escaping an actor ends it as unknown_error with no text.
-static std::string g_err;
-static bool safeFeed(QuicEndpoint* ep, const QDatagram& d, QuicAddr local) {
-	try {
-		ep->feed(d.data.begin(), d.data.size(), toQuicAddr(d.from), local);
-		return true;
-	} catch (std::exception& e) {
-		g_err = std::string("feed: ") + e.what() + " (sender " + d.from.toString() + ")";
-	} catch (...) {
-		g_err = "feed: non-std exception";
-	}
-	return false;
-}
 
 static void fireTrigger(void* p) {
 	static_cast<AsyncTrigger*>(p)->trigger();
@@ -89,7 +68,6 @@ ACTOR Future<Void> quicDriver(Reference<IUDPSocket> sock, QuicEndpoint* ep, Futu
 	state QuicOut out;
 	state int64_t us = 0;
 	loop {
-		g_io[which].iters++;
 		while (ep->pull(out)) {
 			int sent = wait(sock->sendTo(out.bytes.data(), out.bytes.data() + out.bytes.size(), toNetworkAddress(out.to)));
 			g_io[which].sendDone++;
@@ -100,15 +78,14 @@ ACTOR Future<Void> quicDriver(Reference<IUDPSocket> sock, QuicEndpoint* ep, Futu
 			us = 0;
 		choose {
 			when(QDatagram d = waitNext(in)) {
-				g_io[which].nextHits++;
-				safeFeed(ep, d, local);
+				// Only IPv4 is handled. Count anything else instead of throwing in toV4() or dropping it silently.
+				if (d.from.ip.isV4())
+					ep->feed(d.data.begin(), d.data.size(), toQuicAddr(d.from), local);
+				else
+					g_io[which].nonV4++;
 			}
-			when(wait(delay(us / 1e6))) {
-				g_io[which].timerHits++;
-			}
-			when(wait(wake->onTrigger())) {
-				g_io[which].wakeHits++;
-			}
+			when(wait(delay(us / 1e6))) {}
+			when(wait(wake->onTrigger())) {}
 		}
 	}
 }
@@ -173,13 +150,6 @@ ACTOR Future<Void> quicScenario(QuicRunCfg cfg, QuicResult* res) {
 	wait(delay(0.5));
 	client.snapshotState();
 	server.snapshotState();
-	res->diag = "server recv " + futureState(sr) + ", client recv " + futureState(cr) + ", server driver " +
-	            futureState(sd) + ", client driver " + futureState(cd) + "; loop iterations server " +
-	            std::to_string(g_io[0].iters) + " client " + std::to_string(g_io[1].iters) + "; wakes by datagram server " +
-	            std::to_string(g_io[0].nextHits) + " client " + std::to_string(g_io[1].nextHits) + ", by timer server " +
-	            std::to_string(g_io[0].timerHits) + " client " + std::to_string(g_io[1].timerHits) + ", by trigger server " +
-	            std::to_string(g_io[0].wakeHits) + " client " + std::to_string(g_io[1].wakeHits) + "; caught: " +
-	            (g_err.empty() ? std::string("nothing") : g_err);
 	res->client = client.stats;
 	res->server = server.stats;
 	return Void();
@@ -218,10 +188,11 @@ int main(int argc, char** argv) {
 	QuicResult res;
 	Future<Void> f = quicStopAfter(quicScenario(cfg, &res));
 	g_network->run();
-	std::printf("sockets: client sent %llu (%llu bytes) recv %llu (%llu bytes); server sent %llu (%llu bytes) recv %llu (%llu bytes)\n",
+	std::printf("sockets: client sent %llu (%llu bytes) recv %llu (%llu bytes); server sent %llu (%llu bytes) recv %llu (%llu bytes); non-IPv4 senders dropped: client %llu server %llu\n",
 	            (unsigned long long)g_io[1].sendDone, (unsigned long long)g_io[1].sendBytes,
 	            (unsigned long long)g_io[1].recvDone, (unsigned long long)g_io[1].recvBytes,
 	            (unsigned long long)g_io[0].sendDone, (unsigned long long)g_io[0].sendBytes,
-	            (unsigned long long)g_io[0].recvDone, (unsigned long long)g_io[0].recvBytes);
+	            (unsigned long long)g_io[0].recvDone, (unsigned long long)g_io[0].recvBytes,
+	            (unsigned long long)g_io[1].nonV4, (unsigned long long)g_io[0].nonV4);
 	return quicJudge(cfg, res);
 }

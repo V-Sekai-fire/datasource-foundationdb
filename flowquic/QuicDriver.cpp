@@ -125,7 +125,7 @@ bool QuicEndpoint::connect(QuicAddr server, const char* sni) {
 	// picoquic_create_client_cnx starts the connection itself; a second picoquic_start_client_cnx returns -1.
 	// With strict verification and no usable root list it returns no connection, which is the refusal case.
 	if (!impl->cnx) {
-		connectError = "picoquic_create_client_cnx returned no connection (strict verification, no usable root?)";
+		connectError = "picoquic_create_client_cnx returned no connection (it refuses when strict verification is on and no root certificate loaded)";
 		return false;
 	}
 	return true;
@@ -334,7 +334,7 @@ bool QuicEndpoint::connectWt(QuicAddr server, const char* sni, const char* path)
 		return false;
 	}
 	if (picoquic_start_client_cnx(cnx) != 0) {
-		connectError = "picoquic_start_client_cnx refused (strict verification, no usable root?)";
+		connectError = "picoquic_start_client_cnx returned non-zero (it refuses when strict verification is on and no root certificate loaded)";
 		return false;
 	}
 	return true;
@@ -361,8 +361,6 @@ int quicJudge(const QuicRunCfg& cfg, const QuicResult& res) {
 	            (unsigned long long)c.pktsOut, (unsigned long long)c.bytesOut, (unsigned long long)c.pktsIn,
 	            (unsigned long long)c.inRcErr, c.lastInRc, (unsigned long long)s.pktsOut, (unsigned long long)s.pktsIn,
 	            (unsigned long long)s.inRcErr, s.lastInRc);
-	if (!res.diag.empty())
-		std::printf("actors: %s\n", res.diag.c_str());
 	std::printf("server: received %llu datagrams (%llu bytes)\n", (unsigned long long)s.received,
 	            (unsigned long long)s.receivedBytes);
 	if (cfg.badpath) {

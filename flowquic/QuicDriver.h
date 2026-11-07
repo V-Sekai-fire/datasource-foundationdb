@@ -40,7 +40,6 @@ struct QuicResult {
 	QuicStats client, server;
 	bool setupFailed = false;
 	std::string setupError;
-	std::string diag; // final state of the receive and driver actors, and loop counts
 };
 
 class QuicEndpoint {
