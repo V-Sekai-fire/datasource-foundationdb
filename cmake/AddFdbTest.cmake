@@ -306,7 +306,10 @@ function(create_correctness_package)
     COMMENT "Package correctness archive"
     )
   add_custom_target(package_tests ALL DEPENDS ${tar_file})
-  add_dependencies(package_tests strip_only_fdbserver TestHarness)
+  add_dependencies(package_tests strip_only_fdbserver)
+  if(TARGET TestHarness) # the C# test harness exists only with FDB_USE_CSHARP_TOOLS
+    add_dependencies(package_tests TestHarness)
+  endif()
   set(unversioned_tar_file "${CMAKE_BINARY_DIR}/packages/correctness.tar.gz")
   add_custom_command(
     OUTPUT "${unversioned_tar_file}"
@@ -340,7 +343,10 @@ function(create_long_running_correctness_package)
     COMMENT "Package long running correctness archive"
     )
   add_custom_target(package_long_running_tests ALL DEPENDS ${tar_file})
-  add_dependencies(package_long_running_tests strip_only_fdbserver TestHarness)
+  add_dependencies(package_long_running_tests strip_only_fdbserver)
+  if(TARGET TestHarness) # the C# test harness exists only with FDB_USE_CSHARP_TOOLS
+    add_dependencies(package_long_running_tests TestHarness)
+  endif()
   set(unversioned_tar_file "${CMAKE_BINARY_DIR}/packages/long_running_correctness.tar.gz")
   add_custom_command(
     OUTPUT "${unversioned_tar_file}"
@@ -375,7 +381,10 @@ function(create_valgrind_correctness_package)
       COMMENT "Package valgrind correctness archive"
       )
     add_custom_target(package_valgrind_tests ALL DEPENDS ${tar_file})
-    add_dependencies(package_valgrind_tests strip_only_fdbserver TestHarness)
+    add_dependencies(package_valgrind_tests strip_only_fdbserver)
+    if(TARGET TestHarness) # the C# test harness exists only with FDB_USE_CSHARP_TOOLS
+      add_dependencies(package_valgrind_tests TestHarness)
+    endif()
     set(unversioned_tar_file "${CMAKE_BINARY_DIR}/packages/valgrind.tar.gz")
     add_custom_command(
       OUTPUT "${unversioned_tar_file}"
