@@ -35,7 +35,7 @@ on:
   # Scoped to that one base branch rather than every pull request, because this is three
   # platforms building FoundationDB from source and the cost is real.
   pull_request:
-    branches: [portability-consensus]
+    branches: [portability-consensus, main]
 
 permissions:
   contents: write
