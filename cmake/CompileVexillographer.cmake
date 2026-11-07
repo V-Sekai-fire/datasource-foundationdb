@@ -1,28 +1,30 @@
-set(VEXILLOGRAPHER_SRCS
-  ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/c.cs
-  ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/cpp.cs
-  ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/java.cs
-  ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/python.cs
-  ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/ruby.cs
-  ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/vexillographer.cs)
+if(FDB_USE_CSHARP_TOOLS)
+  set(VEXILLOGRAPHER_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/c.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/cpp.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/java.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/python.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/ruby.cs
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdbclient/vexillographer/vexillographer.cs)
 
-if(WIN32)
-  add_executable(vexillographer ${VEXILLOGRAPHER_SRCS})
-  target_compile_options(vexillographer PRIVATE  "/langversion:6")
-  set_property(TARGET vexillographer PROPERTY VS_DOTNET_REFERENCES
-    "System"
-    "System.Core"
-    "System.Data"
-    "System.Xml"
-    "System.Xml.Linq")
-else()
-  set(VEXILLOGRAPHER_REFERENCES "-r:System,System.Core,System.Data,System.Xml,System.Xml.Linq")
-  set(VEXILLOGRAPHER_EXE "${CMAKE_CURRENT_BINARY_DIR}/vexillographer.exe")
-  add_custom_command(OUTPUT ${VEXILLOGRAPHER_EXE}
-    COMMAND ${MCS_EXECUTABLE} ARGS ${VEXILLOGRAPHER_REFERENCES} ${VEXILLOGRAPHER_SRCS} -target:exe -out:${VEXILLOGRAPHER_EXE}
-    DEPENDS ${VEXILLOGRAPHER_SRCS}
-    COMMENT "Compile Vexillographer")
-  add_custom_target(vexillographer DEPENDS ${VEXILLOGRAPHER_EXE})
+  if(WIN32)
+    add_executable(vexillographer ${VEXILLOGRAPHER_SRCS})
+    target_compile_options(vexillographer PRIVATE  "/langversion:6")
+    set_property(TARGET vexillographer PROPERTY VS_DOTNET_REFERENCES
+      "System"
+      "System.Core"
+      "System.Data"
+      "System.Xml"
+      "System.Xml.Linq")
+  else()
+    set(VEXILLOGRAPHER_REFERENCES "-r:System,System.Core,System.Data,System.Xml,System.Xml.Linq")
+    set(VEXILLOGRAPHER_EXE "${CMAKE_CURRENT_BINARY_DIR}/vexillographer.exe")
+    add_custom_command(OUTPUT ${VEXILLOGRAPHER_EXE}
+      COMMAND ${MCS_EXECUTABLE} ARGS ${VEXILLOGRAPHER_REFERENCES} ${VEXILLOGRAPHER_SRCS} -target:exe -out:${VEXILLOGRAPHER_EXE}
+      DEPENDS ${VEXILLOGRAPHER_SRCS}
+      COMMENT "Compile Vexillographer")
+    add_custom_target(vexillographer DEPENDS ${VEXILLOGRAPHER_EXE})
+  endif()
 endif()
 
 function(vexillographer_compile)
@@ -33,7 +35,13 @@ function(vexillographer_compile)
   if(NOT VX_OUTPUT)
     set(VX_OUTPUT ${VX_OUT})
   endif()
-  if(WIN32)
+  if(NOT FDB_USE_CSHARP_TOOLS)
+    add_custom_command(
+      OUTPUT ${VX_OUTPUT}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/fdbclient/vexillographer/vexillographer.py ${CMAKE_SOURCE_DIR}/fdbclient/vexillographer/fdb.options ${VX_LANG} ${VX_OUT}
+      DEPENDS ${CMAKE_SOURCE_DIR}/fdbclient/vexillographer/fdb.options ${CMAKE_SOURCE_DIR}/fdbclient/vexillographer/vexillographer.py
+      COMMENT "Generate FDBOptions ${VX_LANG} files")
+  elseif(WIN32)
     add_custom_command(
       OUTPUT ${VX_OUTPUT}
       COMMAND $<TARGET_FILE:vexillographer> ${CMAKE_SOURCE_DIR}/fdbclient/vexillographer/fdb.options ${VX_LANG} ${VX_OUT}
