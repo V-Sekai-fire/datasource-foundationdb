@@ -36,6 +36,12 @@ if(WIN32 AND TARGET picotls-core)
   # Force-included into every C file that sees picotls.h; see the header for why.
   target_compile_options(picotls-core PUBLIC
     "$<BUILD_INTERFACE:$<$<COMPILE_LANGUAGE:C>:/FI${CMAKE_CURRENT_SOURCE_DIR}/ptls_clangcl_compat.h>>")
+  # cifra/bitops.h passes a uint32_t* to _BitScanReverse, which takes unsigned long*. They are both
+  # 32 bits on Windows, and clang 22 makes the mismatch an error. Kept as a warning, for minicrypto only.
+  if(TARGET picotls-minicrypto)
+    target_compile_options(picotls-minicrypto PRIVATE
+      "$<$<COMPILE_LANGUAGE:C>:-Wno-error=incompatible-pointer-types>")
+  endif()
   foreach(_t picotls-core picotls-openssl picotls-minicrypto)
     if(TARGET ${_t})
       # BUILD_INTERFACE: the fetched source sits in the build tree, and picotls exports these targets,

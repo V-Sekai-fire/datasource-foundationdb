@@ -4,3 +4,11 @@
 #ifndef PTLS_BUILD_ASSERT_EXPR
 #define PTLS_BUILD_ASSERT_EXPR(cond) 1
 #endif
+
+/* wincompat.h does `#define __attribute__(X)` unless __attribute__ is already a macro. Emptied, it
+ * breaks clang's own intrinsic headers (mmintrin.h and the rest), which picotls/openssl.c reaches.
+ * clang-cl understands __attribute__, so make the macro exist and expand to itself: the #ifndef
+ * in wincompat.h then skips the empty definition and nothing else changes. */
+#ifndef __attribute__
+#define __attribute__ __attribute__
+#endif
