@@ -17,7 +17,7 @@ Before the fix, the same positive run passed but the log showed 2 of 4 handshake
 
 ## Not shown
 
-Windows, x86_64, mbedTLS, a path MTU other than loopback, h3zero / WebTransport (rung B), and the entity tick. The scenario's diagnostic counters are still in the source.
+x86_64 Linux, mbedTLS, a path MTU other than loopback, the entity tick, and whether picotls's minicrypto code runs on Windows (it is compiled, and the Windows cifra `count_trailing_zeroes` computes `31 - _BitScanReverse(x)`, which reads as a leading-zero count; unchecked). The scenario's diagnostic counters are still in the source.
 
 ## Rung B: HTTP/3 and WebTransport on the same loop
 
@@ -32,4 +32,27 @@ Same driver; `BUILD_HTTP` on, `picohttp-core` linked, ALPN `h3`. The server serv
 
 The badpath control exercises the HTTP/3 layer, because TLS and QUIC succeed there. The socket counters stay in the output (client 396 sent, server 396 received in the positive run), and a sender that is not IPv4 is counted and reported, not thrown on. `FLOWQUIC_DEBUG=1` turns on picoquic's debug output.
 
-Limits: aarch64 Linux container, loopback, OpenSSL, no Windows. The only build path tried is `FLOWQUIC_PICOQUIC_DIR` pointing at a local checkout of a6f85e8a; the `FetchContent` fallback has not run. A WebTransport datagram adds the session id and a datagram frame header to the 1200-byte payload, so the packet on the wire is a little over 1200 bytes (not measured). Loopback reported a 1440-byte MTU; a real path decides what the entity view can be.
+Limits: loopback, OpenSSL. On aarch64 Linux the only build path tried is `FLOWQUIC_PICOQUIC_DIR` pointing at a local checkout of a6f85e8a; the Windows job below is the run of the `FetchContent` fallback. A WebTransport datagram adds the session id and a datagram frame header to the 1200-byte payload, so the packet on the wire is a little over 1200 bytes (not measured). Loopback reported a 1440-byte MTU; a real path decides what the entity view can be.
+
+## Windows: clang-cl, Boost 1.86, vcpkg static OpenSSL
+
+The `windows-flowquic` entry of `.github/workflows/fdb-portability.yml` configures with `-DFLOWQUIC=ON`, fetches picoquic a6f85e8a and (through `PICOQUIC_FETCH_PTLS`) picotls e446233b, builds the five libraries and `flow_quic_echo`, and runs it. OpenSSL is vcpkg's `x64-windows-static` 3.6.5. A dispatch with `only=windows-flowquic` runs just this entry (about 3 minutes with vcpkg and Boost cached).
+
+picotls has no Windows handling in its CMake, so `flowquic/CMakeLists.txt` and `flowquic/ptls_clangcl_compat.h` supply it:
+- the include path to `picotlsvs/picotls` (for `wincompat.h`), wrapped in `$<BUILD_INTERFACE:>` because picotls exports its targets;
+- `wintimeofday.c` added to `picotls-core`, since `wincompat.h` maps `gettimeofday` to it;
+- a force-included header that defines `PTLS_BUILD_ASSERT_EXPR` as 1 (`picotls.h` defines it only under `__GNUC__`, which clang-cl does not set; this turns off picotls's compile-time array check) and keeps `__attribute__` (`wincompat.h` empties it, which breaks clang's intrinsic headers);
+- `-Wno-error=incompatible-pointer-types` on `picotls-minicrypto` only, for cifra's `uint32_t*` passed to `_BitScanReverse`.
+`pkgconfiglite` is installed on the runner because picotls requires `FIND_PACKAGE(PkgConfig REQUIRED)`.
+
+Run 7 of the dispatch, three runs per case, every run exit 0 with a PASS line:
+
+| Case | Runs | Result |
+| --- | --- | --- |
+| QUIC positive, 192 datagrams of 1200 bytes at 64 Hz | 3 | 3 of 3 PASS: 192 of 192 echoed |
+| QUIC control, client trusts `badcert.pem` | 3 | 3 of 3 PASS: handshake refused, TLS alert 48, 0 datagrams |
+| WebTransport positive | 3 | 3 of 3 PASS: 192 of 192 echoed |
+| WebTransport control | 3 | 3 of 3 PASS: TLS alert 48, 0 datagrams |
+| WebTransport bad path (`/nope`) | 3 | 3 of 3 PASS: refused once, session not opened, 0 datagrams |
+
+Socket counters in the positive runs: client sent 396 and received 340, server sent 340 and received 396 (397/341 in one QUIC run); 0 non-IPv4 senders. The Linux runs above report 394 to 396 on the same case.

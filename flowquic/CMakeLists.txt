@@ -24,6 +24,33 @@ else()
   endif()
 endif()
 
+# picotls's own CMake has no Windows handling. Its sources include "wincompat.h" under _WINDOWS, and
+# that header (with wintimeofday.c, the gettimeofday it maps to) lives in picotlsvs/picotls/.
+if(WIN32 AND TARGET picotls-core)
+  get_target_property(_ptls_dir picotls-core SOURCE_DIR)
+  set(_ptls_win "${_ptls_dir}/picotlsvs/picotls")
+  if(NOT EXISTS "${_ptls_win}/wincompat.h")
+    message(FATAL_ERROR "picotls has no ${_ptls_win}/wincompat.h; the pinned picotls changed")
+  endif()
+  target_sources(picotls-core PRIVATE "${_ptls_win}/wintimeofday.c")
+  # Force-included into every C file that sees picotls.h; see the header for why.
+  target_compile_options(picotls-core PUBLIC
+    "$<BUILD_INTERFACE:$<$<COMPILE_LANGUAGE:C>:/FI${CMAKE_CURRENT_SOURCE_DIR}/ptls_clangcl_compat.h>>")
+  # cifra/bitops.h passes a uint32_t* to _BitScanReverse, which takes unsigned long*. They are both
+  # 32 bits on Windows, and clang 22 makes the mismatch an error. Kept as a warning, for minicrypto only.
+  if(TARGET picotls-minicrypto)
+    target_compile_options(picotls-minicrypto PRIVATE
+      "$<$<COMPILE_LANGUAGE:C>:-Wno-error=incompatible-pointer-types>")
+  endif()
+  foreach(_t picotls-core picotls-openssl picotls-minicrypto)
+    if(TARGET ${_t})
+      # BUILD_INTERFACE: the fetched source sits in the build tree, and picotls exports these targets,
+      # so CMake refuses a bare build-tree path in their interface includes.
+      target_include_directories(${_t} PUBLIC "$<BUILD_INTERFACE:${_ptls_win}>")
+    endif()
+  endforeach()
+endif()
+
 add_flow_target(EXECUTABLE NAME flow_quic_echo SRCS QuicEcho.actor.cpp QuicDriver.cpp)
 target_include_directories(flow_quic_echo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flow_quic_echo PUBLIC flow picohttp-core picoquic-core)
