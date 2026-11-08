@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.label || matrix.os }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     timeout-minutes: 300
@@ -69,6 +69,16 @@ jobs:
             container: ""
             build_jobs: 3
           - os: windows
+            runner: windows-latest
+            container: ""
+            build_jobs: 4
+          # FLOWQUIC=ON on Windows: the same clang-cl, Boost 1.86 and vcpkg setup as the
+          # windows job above, building only flow_quic_echo. It publishes nothing and the
+          # desk is not involved. Never run before: the picotls fetch, and whether vcpkg's
+          # static OpenSSL is the one picoquic's find_package picks up.
+          - os: windows
+            label: windows-flowquic
+            flowquic: "ON"
             runner: windows-latest
             container: ""
             build_jobs: 4
@@ -227,6 +237,10 @@ jobs:
                   -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
                   -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF
                   -DFDB_BUILDTIME=$STAMP"
+          QUIC_ARGS=""
+          if [ "${{ matrix.flowquic }}" = ON ]; then
+            QUIC_ARGS="-DFLOWQUIC=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+          fi
           if [ "${{ matrix.os }}" = windows ]; then
             # No -G: CMake's default is the newest installed Visual Studio, and this runner
             # ships VS 18, so naming "Visual Studio 17 2022" named one that is not there.
@@ -244,7 +258,7 @@ jobs:
               -DBoost_COMPILER=vc143 -DBoost_USE_STATIC_LIBS=ON \
               -DBoost_USE_STATIC_RUNTIME=ON \
               -DVCPKG_TARGET_TRIPLET=x64-windows-static \
-              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DSSD_ROCKSDB_EXPERIMENTAL=OFF 2>&1 | tee configure.log
+              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DSSD_ROCKSDB_EXPERIMENTAL=OFF $QUIC_ARGS 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           elif [ "${{ matrix.os }}" = macos ]; then
             # Only what cmake/ cannot work out: the pixi OpenSSL prefix, RocksDB off to match
@@ -292,6 +306,7 @@ jobs:
       # Each step stops the job, so a failure names the first thing that broke. --config Release
       # is what the Visual Studio generator needs and what Ninja ignores.
       - name: Build fdb_c
+        if: matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -301,6 +316,7 @@ jobs:
           exit $rc
 
       - name: Build fdbcli
+        if: matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -313,6 +329,7 @@ jobs:
       # nowhere else: fdbserver's actor-generated translation units are large enough that an
       # unqualified --parallel got the job killed at exit 137.
       - name: Build fdbserver
+        if: matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -391,7 +408,7 @@ jobs:
       # $ENV{WIX}, so that is what is probed. `installer` also pulls in fdbmonitor, fdbbackup
       # and python_binding. No `|| true`, for the same reason as macOS above.
       - name: Package (MSI, windows)
-        if: matrix.os == 'windows'
+        if: matrix.os == 'windows' && matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -404,13 +421,38 @@ jobs:
             echo "::error::installer target succeeded but produced no .msi"; rc=1; }
           exit $rc
 
+      # A -D that nothing reads is accepted silently, so check the option took effect and
+      # say which OpenSSL and picotls were found, before the long build.
+      - name: FLOWQUIC took effect, and which OpenSSL
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          cmake --version | head -1
+          grep -E '^(FLOWQUIC|OPENSSL_[A-Z_]*|FLOWQUIC_PICOQUIC_TAG|PICOQUIC_FETCH_PTLS|WITH_OPENSSL)[:=]' build/CMakeCache.txt || true
+          grep -q '^FLOWQUIC:BOOL=ON' build/CMakeCache.txt || { echo "::error::FLOWQUIC is not ON in the cache"; exit 1; }
+          grep -qiE 'OPENSSL_CRYPTO_LIBRARY[^=]*=.*vcpkg' build/CMakeCache.txt || echo "::warning::OpenSSL did not come from vcpkg; check OPENSSL_* above"
+
+      - name: Build flow_quic_echo
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          set +e
+          cmake --build build --config Release --target flow_quic_echo --parallel ${{ matrix.build_jobs }} 2>&1 | tee build-flow_quic_echo.log
+          rc=${PIPESTATUS[0]}
+          grep -iE "error|fatal|Could NOT find|cannot open|unresolved|LNK2038" build-flow_quic_echo.log | head -60
+          exit $rc
+
       - name: Logs
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: log-${{ matrix.os }}
-          path: "*.log"
+          name: log-${{ matrix.label || matrix.os }}
+          path: |
+            *.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/CMakeFiles/CMakeError.log
           if-no-files-found: warn
 
       - name: Binaries and packages
@@ -418,7 +460,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: bin-${{ matrix.os }}
+          name: bin-${{ matrix.label || matrix.os }}
           path: |
             build/bin/fdbserver
             build/bin/fdbcli
@@ -444,7 +486,7 @@ jobs:
 
       # A release is one flat namespace for every build tree.
       - name: Publish to the release
-        if: inputs.release_tag != ''
+        if: inputs.release_tag != '' && matrix.flowquic != 'ON'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
