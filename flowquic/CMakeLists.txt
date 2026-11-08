@@ -36,6 +36,31 @@ if(WIN32 AND TARGET picotls-core)
   # Force-included into every C file that sees picotls.h; see the header for why.
   target_compile_options(picotls-core PUBLIC
     "$<BUILD_INTERFACE:$<$<COMPILE_LANGUAGE:C>:/FI${CMAKE_CURRENT_SOURCE_DIR}/ptls_clangcl_compat.h>>")
+  # The compat header must leave picotls's array check enforced, not stubbed out. Compile the real
+  # macro with the same flags: an array must be accepted and a pointer refused. The refusals prove
+  # nothing alone (a missing include also fails), so the array case has to pass first.
+  include(CheckCSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_FLAGS "/FI${CMAKE_CURRENT_SOURCE_DIR}/ptls_clangcl_compat.h")
+  set(CMAKE_REQUIRED_DEFINITIONS -D_WINDOWS)
+  set(CMAKE_REQUIRED_INCLUDES "${_ptls_dir}/include" "${_ptls_win}")
+  check_c_source_compiles("#include <picotls.h>
+int main(void) { unsigned char a[4]; return (int)PTLS_ELEMENTSOF(a); }" FLOWQUIC_PTLS_ARRAY_ACCEPTED)
+  check_c_source_compiles("#include <picotls.h>
+int main(void) { unsigned char *p = 0; return (int)PTLS_ELEMENTSOF(p); }" FLOWQUIC_PTLS_POINTER_ACCEPTED)
+  check_c_source_compiles("#include <picotls.h>
+int main(void) { return PTLS_BUILD_ASSERT_EXPR(0); }" FLOWQUIC_PTLS_FALSE_ASSERT_ACCEPTED)
+  cmake_pop_check_state()
+  if(NOT FLOWQUIC_PTLS_ARRAY_ACCEPTED)
+    message(FATAL_ERROR "PTLS_ELEMENTSOF refuses an array under the compat header; the check cannot tell anything")
+  endif()
+  if(FLOWQUIC_PTLS_POINTER_ACCEPTED)
+    message(FATAL_ERROR "PTLS_ELEMENTSOF accepts a pointer: picotls's array check is not enforced under clang-cl")
+  endif()
+  if(FLOWQUIC_PTLS_FALSE_ASSERT_ACCEPTED)
+    message(FATAL_ERROR "PTLS_BUILD_ASSERT_EXPR(0) compiles: the build assertion is not enforced under clang-cl")
+  endif()
   # cifra/bitops.h passes a uint32_t* to _BitScanReverse, which takes unsigned long*. They are both
   # 32 bits on Windows, and clang 22 makes the mismatch an error. Kept as a warning, for minicrypto only.
   if(TARGET picotls-minicrypto)
