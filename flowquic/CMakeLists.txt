@@ -95,5 +95,6 @@ add_executable(flowquic_unit_tests QuicUnitTests.cpp QuicDriver.cpp)
 target_include_directories(flowquic_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flowquic_unit_tests PRIVATE picohttp-core picoquic-core)
 if(WIN32)
-  target_link_libraries(flowquic_unit_tests PRIVATE ws2_32)
+  # picotls's random source is BCryptGenRandom; flow_quic_echo gets bcrypt through flow.
+  target_link_libraries(flowquic_unit_tests PRIVATE ws2_32 bcrypt)
 endif()
