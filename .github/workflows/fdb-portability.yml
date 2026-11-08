@@ -48,7 +48,11 @@ permissions:
 
 concurrency:
   group: fdb-portability-${{ github.ref }}-${{ inputs.only || 'all' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A manual re-dispatch on the same ref and `only` used to queue behind a stale run instead of
+  # replacing it (e.g. after a transient msgpack download failure), since only pull_request
+  # cancelled. workflow_dispatch now does too, for the same reason: a dev iterating on one branch
+  # wants their next dispatch to win, not wait. push and merge_group stay serialized.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   # A job-level `if` cannot see the matrix, so the matrix is built here and `only` filters it.
