@@ -17,7 +17,7 @@ Before the fix, the same positive run passed but the log showed 2 of 4 handshake
 
 ## Not shown
 
-x86_64 Linux, mbedTLS, a path MTU other than loopback, the entity tick, and whether picotls's minicrypto code runs on Windows (it is compiled, and the Windows cifra `count_trailing_zeroes` computes `31 - _BitScanReverse(x)`, which reads as a leading-zero count; unchecked). The scenario's diagnostic counters are still in the source.
+x86_64 Linux, mbedTLS, a path MTU other than loopback, and the entity tick. The scenario's diagnostic counters are still in the source.
 
 ## Rung B: HTTP/3 and WebTransport on the same loop
 
@@ -56,3 +56,18 @@ Run 7 of the dispatch, three runs per case, every run exit 0 with a PASS line:
 | WebTransport bad path (`/nope`) | 3 | 3 of 3 PASS: refused once, session not opened, 0 datagrams |
 
 Socket counters in the positive runs: client sent 396 and received 340, server sent 340 and received 396 (397/341 in one QUIC run); 0 non-IPv4 senders. The Linux runs above report 394 to 396 on the same case.
+
+## cifra's count_trailing_zeroes on Windows, probed and patched
+
+`deps/cifra/src/bitops.h` computed `31 - _BitScanReverse(x)` under `_WINDOWS`. `_BitScanReverse`
+finds the HIGHEST set bit, so that is a leading-zero count, not trailing; a planted-answer probe
+(`flowquic/ptls_cifra_ctz_probe.c`) measured 7 of 7 rows wrong (`count_trailing_zeroes(1)` returned
+31, not 0). Nothing in this build calls it — picotls never compiles `ocb.c`, cifra's only caller —
+so this was dead but wrong code, not an observed failure.
+
+`flowquic/CMakeLists.txt` now patches the fetched source at configure time: `_BitScanForward` gives
+the index of the LOWEST set bit, which is exactly a trailing-zero count, so the call and the return
+are both changed (`_BitScanForward(&r, x); return r;`). The patch asserts the broken text is present
+before replacing it, so a future picotls tag that already fixed this (or changed the file) fails the
+configure loudly instead of silently no-op'ing or double-patching. The probe's expected values were
+already the correct trailing-zero counts, so a clean probe run (0 of 7 wrong) is the proof.
