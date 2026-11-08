@@ -480,6 +480,14 @@ jobs:
           done
           exit $rc
 
+      # The echo run, on this entry only. Operator exception to the CPU integration-test
+      # blocklist for this one job, 2026-11-07 (like gate-mm). Five cases, three runs each:
+      # QUIC positive and control, WebTransport positive, control and bad path.
+      - name: Run flow_quic_echo
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: bash flowquic/run-windows.sh
+
       - name: Logs
         if: always()
         continue-on-error: true
