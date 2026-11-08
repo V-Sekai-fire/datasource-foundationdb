@@ -35,7 +35,9 @@ if(WIN32 AND TARGET picotls-core)
   target_sources(picotls-core PRIVATE "${_ptls_win}/wintimeofday.c")
   foreach(_t picotls-core picotls-openssl picotls-minicrypto)
     if(TARGET ${_t})
-      target_include_directories(${_t} PUBLIC "${_ptls_win}")
+      # BUILD_INTERFACE: the fetched source sits in the build tree, and picotls exports these targets,
+      # so CMake refuses a bare build-tree path in their interface includes.
+      target_include_directories(${_t} PUBLIC "$<BUILD_INTERFACE:${_ptls_win}>")
     endif()
   endforeach()
 endif()
