@@ -587,7 +587,10 @@ class ReadPromise {
 public:
 	ReadPromise(const char* errContext, UID errID) : errContext(errContext), errID(errID) {}
 	ReadPromise(ReadPromise const& other) = default;
-	ReadPromise(ReadPromise&& other) : p(std::move(other.p)), errContext(other.errContext), errID(other.errID) {}
+	// endpoint moves too: UDPSocket::receiveFrom keeps a raw pointer into it while the promise is moved into asio,
+	// and a moved-from shared_ptr left behind freed the endpoint when receiveFrom returned.
+	ReadPromise(ReadPromise&& other)
+	  : p(std::move(other.p)), errContext(other.errContext), errID(other.errID), endpoint(std::move(other.endpoint)) {}
 
 	std::shared_ptr<udp::endpoint>& getEndpoint() { return endpoint; }
 

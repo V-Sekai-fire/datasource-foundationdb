@@ -24,6 +24,10 @@ on:
         description: publish the built binaries to this release tag (blank publishes nothing)
         required: false
         default: ""
+      only:
+        description: build only the matrix entry with this name, such as windows-flowquic (blank builds all)
+        required: false
+        default: ""
   push:
     branches: [portability-consensus]
   # A pull request into the branch this workflow guards runs it too. Without this a change
@@ -43,35 +47,33 @@ permissions:
   contents: write
 
 concurrency:
-  group: fdb-portability-${{ github.ref }}
+  group: fdb-portability-${{ github.ref }}-${{ inputs.only || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A job-level `if` cannot see the matrix, so the matrix is built here and `only` filters it.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.m.outputs.include }}
+    steps:
+      - uses: actions/checkout@v5
+      # The matrix and its filter live in a file so a desk can test them (test_plan_matrix.py).
+      - id: m
+        env:
+          ONLY: ${{ inputs.only }}
+        run: python3 .github/scripts/plan_matrix.py
+
   build:
-    name: ${{ matrix.os }}
+    needs: plan
+    name: ${{ matrix.label || matrix.os }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: linux
-            runner: ubuntu-latest
-            container: foundationdb/build:rockylinux9-latest
-            build_jobs: 2
-          # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
-          # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
-          # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
-          # memory in the matrix.
-          - os: macos
-            runner: macos-latest
-            container: ""
-            build_jobs: 3
-          - os: windows
-            runner: windows-latest
-            container: ""
-            build_jobs: 4
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
 
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
@@ -121,6 +123,21 @@ jobs:
           echo "$envs/mono/bin" >> "$GITHUB_PATH"
           echo "FDB_TOOLS_PREFIX=$envs/default" >> "$GITHUB_ENV"
           arch -x86_64 "$envs/mono/bin/mono" --version | head -1
+
+      # picotls does FIND_PACKAGE(PkgConfig REQUIRED) unconditionally (CMakeLists.txt:12) and
+      # the runner has no pkg-config. The brotli lookups after it are optional.
+      - name: pkg-config (windows, flowquic)
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            choco install pkgconfiglite -y --no-progress && break
+            echo "::warning::choco attempt $attempt failed; retrying"
+          done
+          exe="C:/ProgramData/chocolatey/bin/pkg-config.exe"
+          [ -f "$exe" ] || { echo "::error::$exe is missing after the install"; exit 1; }
+          "$exe" --version
+          echo "PKG_CONFIG_EXECUTABLE=$exe" >> "$GITHUB_ENV"
 
       - name: Cache vcpkg binaries (windows)
         if: matrix.os == 'windows'
@@ -227,6 +244,10 @@ jobs:
                   -DBUILD_TESTING=OFF -DBUILD_DOCUMENTATION=OFF -DWITH_SWIFT=OFF
                   -DWITH_JAVA_BINDING=OFF -DWITH_GO_BINDING=OFF -DWITH_RUBY_BINDING=OFF
                   -DFDB_BUILDTIME=$STAMP"
+          QUIC_ARGS=""
+          if [ "${{ matrix.flowquic }}" = ON ]; then
+            QUIC_ARGS="-DFLOWQUIC=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPKG_CONFIG_EXECUTABLE=$PKG_CONFIG_EXECUTABLE"
+          fi
           if [ "${{ matrix.os }}" = windows ]; then
             # No -G: CMake's default is the newest installed Visual Studio, and this runner
             # ships VS 18, so naming "Visual Studio 17 2022" named one that is not there.
@@ -244,7 +265,7 @@ jobs:
               -DBoost_COMPILER=vc143 -DBoost_USE_STATIC_LIBS=ON \
               -DBoost_USE_STATIC_RUNTIME=ON \
               -DVCPKG_TARGET_TRIPLET=x64-windows-static \
-              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DSSD_ROCKSDB_EXPERIMENTAL=OFF 2>&1 | tee configure.log
+              -DWITH_TLS=OFF -DUSE_JEMALLOC=OFF -DSSD_ROCKSDB_EXPERIMENTAL=OFF $QUIC_ARGS 2>&1 | tee configure.log
             grep -E 'CMAKE_GENERATOR:|Boost' build/CMakeCache.txt | head -10 || true
           elif [ "${{ matrix.os }}" = macos ]; then
             # Only what cmake/ cannot work out: the pixi OpenSSL prefix, RocksDB off to match
@@ -292,6 +313,7 @@ jobs:
       # Each step stops the job, so a failure names the first thing that broke. --config Release
       # is what the Visual Studio generator needs and what Ninja ignores.
       - name: Build fdb_c
+        if: matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -301,6 +323,7 @@ jobs:
           exit $rc
 
       - name: Build fdbcli
+        if: matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -313,6 +336,7 @@ jobs:
       # nowhere else: fdbserver's actor-generated translation units are large enough that an
       # unqualified --parallel got the job killed at exit 137.
       - name: Build fdbserver
+        if: matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -391,7 +415,7 @@ jobs:
       # $ENV{WIX}, so that is what is probed. `installer` also pulls in fdbmonitor, fdbbackup
       # and python_binding. No `|| true`, for the same reason as macOS above.
       - name: Package (MSI, windows)
-        if: matrix.os == 'windows'
+        if: matrix.os == 'windows' && matrix.flowquic != 'ON'
         shell: bash
         run: |
           set +e
@@ -404,13 +428,74 @@ jobs:
             echo "::error::installer target succeeded but produced no .msi"; rc=1; }
           exit $rc
 
+      # A -D that nothing reads is accepted silently, so check the option took effect and
+      # say which OpenSSL and picotls were found, before the long build.
+      - name: FLOWQUIC took effect, and which OpenSSL
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          cmake --version | head -1
+          grep -E '^(FLOWQUIC|PKG_CONFIG_EXECUTABLE|OPENSSL_[A-Z_]*|FLOWQUIC_PICOQUIC_TAG|PICOQUIC_FETCH_PTLS|WITH_OPENSSL)[:=]' build/CMakeCache.txt || true
+          grep -q '^FLOWQUIC:BOOL=ON' build/CMakeCache.txt || { echo "::error::FLOWQUIC is not ON in the cache"; exit 1; }
+          grep -q '^OPENSSL_INCLUDE_DIR:PATH=.*vcpkg' build/CMakeCache.txt || { echo "::error::OpenSSL headers did not come from vcpkg"; exit 1; }
+          grep -E 'Found OpenSSL' configure.log
+
+      # One command per target, none stopping the next, so one run says which of picotls, picoquic
+      # and the driver compile and not only the first that breaks. The step still fails if any did.
+      - name: Build flow_quic_echo, and the libraries under it
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          set +e
+          rc=0
+          for t in picotls-core picotls-minicrypto picotls-openssl picoquic-core picohttp-core flowquic_unit_tests ptls_cifra_ctz_probe flow_quic_echo; do
+            cmake --build build --config Release --target $t --parallel ${{ matrix.build_jobs }} > "build-$t.log" 2>&1
+            r=$?
+            echo "target $t: exit $r"
+            grep -E "error|fatal|LNK[0-9]+|unresolved" "build-$t.log" | head -20
+            [ $r -eq 0 ] || rc=1
+          done
+          exit $rc
+
+      # Unit tests of the run judge. Pure decision-table checks, so they gate the echo run.
+      - name: Unit tests (flowquic)
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          exe=$(find build -name flowquic_unit_tests.exe | head -1)
+          [ -n "$exe" ] || { echo "::error::flowquic_unit_tests.exe was not built"; exit 1; }
+          "$exe" 2>&1 | tee unit-tests.log
+
+      # A probe, not a gate: cifra's count_trailing_zeroes on Windows reads as a leading-zero count.
+      # The numbers go in the log; the step cannot fail the job.
+      - name: cifra count_trailing_zeroes probe
+        if: matrix.flowquic == 'ON'
+        continue-on-error: true
+        shell: bash
+        run: |
+          exe=$(find build -name ptls_cifra_ctz_probe.exe | head -1)
+          [ -n "$exe" ] || { echo "::error::ptls_cifra_ctz_probe.exe was not built"; exit 1; }
+          "$exe" 2>&1 | tee cifra-probe.log
+
+      # The echo run, on this entry only. Operator exception to the CPU integration-test
+      # blocklist for this one job, 2026-11-07 (like gate-mm). Five cases, three runs each:
+      # QUIC positive and control, WebTransport positive, control and bad path.
+      - name: Run flow_quic_echo
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: bash flowquic/run-windows.sh
+
       - name: Logs
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: log-${{ matrix.os }}
-          path: "*.log"
+          name: log-${{ matrix.label || matrix.os }}
+          path: |
+            *.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/CMakeFiles/CMakeError.log
           if-no-files-found: warn
 
       - name: Binaries and packages
@@ -418,7 +503,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: bin-${{ matrix.os }}
+          name: bin-${{ matrix.label || matrix.os }}
           path: |
             build/bin/fdbserver
             build/bin/fdbcli
@@ -444,7 +529,7 @@ jobs:
 
       # A release is one flat namespace for every build tree.
       - name: Publish to the release
-        if: inputs.release_tag != ''
+        if: inputs.release_tag != '' && matrix.flowquic != 'ON'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -475,7 +560,7 @@ jobs:
   # read. Each build job publishes its own SHA256SUMS.<os>; this joins them once all three have.
   checksums:
     needs: build
-    if: inputs.release_tag != ''
+    if: inputs.release_tag != '' && inputs.only == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write

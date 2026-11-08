@@ -22,6 +22,9 @@ function(generate_coverage_xml)
   if(NOT (${ARGC} EQUAL "1"))
     message(FATAL_ERROR "generate_coverage_xml expects one argument")
   endif()
+  if(NOT FDB_USE_CSHARP_TOOLS)
+    return() # the coverage tool is C# only
+  endif()
   set(target_name ${ARGV0})
   get_target_property(sources ${target_name} SOURCE_FILES)
   get_target_property(filters ${target_name} COVERAGE_FILTER_OUT)
@@ -237,7 +240,13 @@ function(add_flow_target)
         endforeach()
 
         list(APPEND generated_files ${out_file})
-        if(WIN32)
+        if(NOT FDB_USE_CSHARP_TOOLS)
+          add_custom_command(OUTPUT "${out_file}"
+            COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${CMAKE_SOURCE_DIR}/flow"
+                    ${Python3_EXECUTABLE} -m actorcompiler_py "${in_file}" "${out_file}" ${actor_compiler_flags}
+            DEPENDS "${in_file}" ${ACTORCOMPILER_PY_SRCS}
+            COMMENT "Compile actor: ${src}" VERBATIM)
+        elseif(WIN32)
           add_custom_command(OUTPUT "${out_file}"
             COMMAND $<TARGET_FILE:actorcompiler> "${in_file}" "${out_file}" ${actor_compiler_flags}
             DEPENDS "${in_file}" ${actor_exe}
