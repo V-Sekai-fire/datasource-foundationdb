@@ -76,6 +76,24 @@ int main(void) { return PTLS_BUILD_ASSERT_EXPR(0); }" FLOWQUIC_PTLS_FALSE_ASSERT
   endforeach()
 endif()
 
+# Probe for cifra's count_trailing_zeroes as bitops.h compiles it on Windows. Built on request
+# (EXCLUDE_FROM_ALL); the portability workflow builds it by name and reports its numbers.
+if(WIN32 AND DEFINED _ptls_dir)
+  add_executable(ptls_cifra_ctz_probe EXCLUDE_FROM_ALL ptls_cifra_ctz_probe.c)
+  target_include_directories(ptls_cifra_ctz_probe PRIVATE "${_ptls_dir}/deps/cifra/src")
+  target_compile_definitions(ptls_cifra_ctz_probe PRIVATE _WINDOWS)
+  target_compile_options(ptls_cifra_ctz_probe PRIVATE -Wno-error=incompatible-pointer-types)
+endif()
+
 add_flow_target(EXECUTABLE NAME flow_quic_echo SRCS QuicEcho.actor.cpp QuicDriver.cpp)
 target_include_directories(flow_quic_echo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flow_quic_echo PUBLIC flow picohttp-core picoquic-core)
+
+# Unit tests of the run judge: no sockets, no connection, no Flow. Run directly by the portability
+# workflow; there is no ctest here because the root build sets BUILD_TESTING=OFF.
+add_executable(flowquic_unit_tests QuicUnitTests.cpp QuicDriver.cpp)
+target_include_directories(flowquic_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(flowquic_unit_tests PRIVATE picohttp-core picoquic-core)
+if(WIN32)
+  target_link_libraries(flowquic_unit_tests PRIVATE ws2_32)
+endif()
