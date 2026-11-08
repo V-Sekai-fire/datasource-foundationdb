@@ -36,6 +36,8 @@ on:
   # platforms building FoundationDB from source and the cost is real.
   pull_request:
     branches: [portability-consensus, main]
+  # The merge queue builds the PR merged onto the queue's base in a merge_group run.
+  merge_group:
 
 permissions:
   contents: write
