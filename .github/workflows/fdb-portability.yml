@@ -24,6 +24,10 @@ on:
         description: publish the built binaries to this release tag (blank publishes nothing)
         required: false
         default: ""
+      only:
+        description: build only the matrix entry with this name, such as windows-flowquic (blank builds all)
+        required: false
+        default: ""
   push:
     branches: [portability-consensus]
   # A pull request into the branch this workflow guards runs it too. Without this a change
@@ -43,11 +47,48 @@ permissions:
   contents: write
 
 concurrency:
-  group: fdb-portability-${{ github.ref }}
+  group: fdb-portability-${{ github.ref }}-${{ inputs.only || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A job-level `if` cannot see the matrix, so the matrix is built here and `only` filters it.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.m.outputs.include }}
+    steps:
+      - id: m
+        shell: python
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          import json, os, sys
+          entries = [
+              {"os": "linux", "runner": "ubuntu-latest",
+               "container": "foundationdb/build:rockylinux9-latest", "build_jobs": 2},
+              # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
+              # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
+              # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
+              # memory in the matrix.
+              {"os": "macos", "runner": "macos-latest", "container": "", "build_jobs": 3},
+              {"os": "windows", "runner": "windows-latest", "container": "", "build_jobs": 4},
+              # FLOWQUIC=ON on Windows: the same clang-cl, Boost 1.86 and vcpkg setup as the
+              # windows entry, building only flow_quic_echo. It publishes nothing and the
+              # desk is not involved.
+              {"os": "windows", "label": "windows-flowquic", "flowquic": "ON",
+               "runner": "windows-latest", "container": "", "build_jobs": 4},
+          ]
+          only = os.environ.get("ONLY", "").strip()
+          if only:
+              entries = [e for e in entries if e.get("label", e["os"]) == only]
+              if not entries:
+                  sys.exit("::error::no matrix entry is named " + only)
+          print("entries:", [e.get("label", e["os"]) for e in entries])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("include=" + json.dumps(entries) + "\n")
+
   build:
+    needs: plan
     name: ${{ matrix.label || matrix.os }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
@@ -55,33 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: linux
-            runner: ubuntu-latest
-            container: foundationdb/build:rockylinux9-latest
-            build_jobs: 2
-          # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
-          # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
-          # and USE_AVX finds no ^x86 and disables itself. 3 cores and 7 GB, the least
-          # memory in the matrix.
-          - os: macos
-            runner: macos-latest
-            container: ""
-            build_jobs: 3
-          - os: windows
-            runner: windows-latest
-            container: ""
-            build_jobs: 4
-          # FLOWQUIC=ON on Windows: the same clang-cl, Boost 1.86 and vcpkg setup as the
-          # windows job above, building only flow_quic_echo. It publishes nothing and the
-          # desk is not involved. Never run before: the picotls fetch, and whether vcpkg's
-          # static OpenSSL is the one picoquic's find_package picks up.
-          - os: windows
-            label: windows-flowquic
-            flowquic: "ON"
-            runner: windows-latest
-            container: ""
-            build_jobs: 4
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
 
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache,readwrite"
@@ -131,6 +146,21 @@ jobs:
           echo "$envs/mono/bin" >> "$GITHUB_PATH"
           echo "FDB_TOOLS_PREFIX=$envs/default" >> "$GITHUB_ENV"
           arch -x86_64 "$envs/mono/bin/mono" --version | head -1
+
+      # picotls does FIND_PACKAGE(PkgConfig REQUIRED) unconditionally (CMakeLists.txt:12) and
+      # the runner has no pkg-config. The brotli lookups after it are optional.
+      - name: pkg-config (windows, flowquic)
+        if: matrix.flowquic == 'ON'
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            choco install pkgconfiglite -y --no-progress && break
+            echo "::warning::choco attempt $attempt failed; retrying"
+          done
+          exe="C:/ProgramData/chocolatey/bin/pkg-config.exe"
+          [ -f "$exe" ] || { echo "::error::$exe is missing after the install"; exit 1; }
+          "$exe" --version
+          echo "PKG_CONFIG_EXECUTABLE=$exe" >> "$GITHUB_ENV"
 
       - name: Cache vcpkg binaries (windows)
         if: matrix.os == 'windows'
@@ -239,7 +269,7 @@ jobs:
                   -DFDB_BUILDTIME=$STAMP"
           QUIC_ARGS=""
           if [ "${{ matrix.flowquic }}" = ON ]; then
-            QUIC_ARGS="-DFLOWQUIC=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+            QUIC_ARGS="-DFLOWQUIC=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPKG_CONFIG_EXECUTABLE=$PKG_CONFIG_EXECUTABLE"
           fi
           if [ "${{ matrix.os }}" = windows ]; then
             # No -G: CMake's default is the newest installed Visual Studio, and this runner
@@ -428,7 +458,7 @@ jobs:
         shell: bash
         run: |
           cmake --version | head -1
-          grep -E '^(FLOWQUIC|OPENSSL_[A-Z_]*|FLOWQUIC_PICOQUIC_TAG|PICOQUIC_FETCH_PTLS|WITH_OPENSSL)[:=]' build/CMakeCache.txt || true
+          grep -E '^(FLOWQUIC|PKG_CONFIG_EXECUTABLE|OPENSSL_[A-Z_]*|FLOWQUIC_PICOQUIC_TAG|PICOQUIC_FETCH_PTLS|WITH_OPENSSL)[:=]' build/CMakeCache.txt || true
           grep -q '^FLOWQUIC:BOOL=ON' build/CMakeCache.txt || { echo "::error::FLOWQUIC is not ON in the cache"; exit 1; }
           grep -qiE 'OPENSSL_CRYPTO_LIBRARY[^=]*=.*vcpkg' build/CMakeCache.txt || echo "::warning::OpenSSL did not come from vcpkg; check OPENSSL_* above"
 
@@ -517,7 +547,7 @@ jobs:
   # read. Each build job publishes its own SHA256SUMS.<os>; this joins them once all three have.
   checksums:
     needs: build
-    if: inputs.release_tag != ''
+    if: inputs.release_tag != '' && inputs.only == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
