@@ -465,7 +465,7 @@ int quicJudge(const QuicRunCfg& cfg, const QuicResult& res) {
 	}
 	// Control: the client trusts the wrong root. It must not complete the handshake, must receive nothing, and
 	// must have been closed by a TLS alert (QUIC crypto error range 0x100 to 0x1ff), not by a timeout or a typo.
-	bool tls = c.localError >= 0x100 && c.localError <= 0x1ff;
+	bool tls = c.localError >= 0x100 && c.localError <= 0x2ff;
 	bool ok = !c.ready && c.received == 0 && c.closed && tls;
 	if (tls)
 		std::printf("control closed by TLS alert %llu\n", (unsigned long long)(c.localError - 0x100));

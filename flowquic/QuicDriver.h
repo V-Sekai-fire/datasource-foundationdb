@@ -29,9 +29,9 @@ struct QuicStats {
 
 struct QuicRunCfg {
 	std::string cert, key, root, sni;
-	bool control = false; // client trusts the wrong root
-	bool badpath = false; // WebTransport CONNECT to a path the server does not serve
-	bool wt = false; // HTTP/3 + WebTransport (rung B) instead of raw QUIC datagrams (rung A)
+	bool control = false;  // client trusts the wrong root
+	bool badpath = false;  // WebTransport CONNECT to a path the server does not serve
+	bool wt = false;       // HTTP/3 + WebTransport (rung B) instead of raw QUIC datagrams (rung A)
 	int count = 192; // datagrams
 	int size = 1200; // bytes per datagram
 };
