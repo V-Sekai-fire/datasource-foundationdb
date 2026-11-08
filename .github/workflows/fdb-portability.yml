@@ -531,6 +531,21 @@ jobs:
             ls -l "$f"
           done
 
+      # gh ships preinstalled on the windows-latest and macos-latest runner images, but the
+      # linux job runs in foundationdb/build:rockylinux9-latest, a plain container with none of
+      # the runner's own tooling, so Publish's `gh release upload` failed with "command not
+      # found" (run 42507818803). Rocky Linux 9 is RPM-based; this is cli.github.com's own dnf
+      # repo, the same install GitHub's docs give for RHEL/Fedora/CentOS/Rocky.
+      - name: gh CLI (linux container)
+        if: inputs.release_tag != '' && matrix.flowquic != 'ON' && matrix.os == 'linux'
+        shell: bash
+        run: |
+          set -eu
+          dnf install -y 'dnf-command(config-manager)'
+          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          dnf install -y gh
+          gh --version
+
       # A release is one flat namespace for every build tree.
       - name: Publish to the release
         if: inputs.release_tag != '' && matrix.flowquic != 'ON'
