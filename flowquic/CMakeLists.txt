@@ -74,6 +74,31 @@ int main(void) { return PTLS_BUILD_ASSERT_EXPR(0); }" FLOWQUIC_PTLS_FALSE_ASSERT
       target_include_directories(${_t} PUBLIC "$<BUILD_INTERFACE:${_ptls_win}>")
     endif()
   endforeach()
+  # cifra's count_trailing_zeroes computed 31 - _BitScanReverse(x) on Windows, which finds the
+  # HIGHEST set bit, so the result was a leading-zero count, not trailing. Measured (the probe
+  # below) 7 of 7 planted answers wrong, e.g. count_trailing_zeroes(1) returned 31, not 0. Nothing
+  # in this build calls it (picotls never compiles ocb.c), so this is a configure-time source
+  # patch, not a behaviour change here. _BitScanForward gives the index of the LOWEST set bit,
+  # which is exactly a trailing-zero count, so the fix is to call that and return its result
+  # directly. Patched in the fetched tree, not upstream, so a tag bump that already fixed this
+  # fails loudly (the REPLACE finding nothing) rather than double-patching or silently no-op'ing.
+  set(_bitops "${_ptls_dir}/deps/cifra/src/bitops.h")
+  if(NOT EXISTS "${_bitops}")
+    message(FATAL_ERROR "picotls has no ${_bitops}; the pinned picotls changed")
+  endif()
+  file(READ "${_bitops}" _bitops_src)
+  set(_ctz_broken [[  uint32_t r = 0;
+  _BitScanReverse(&r, x);
+  return (31 - r);]])
+  set(_ctz_fixed [[  uint32_t r = 0;
+  _BitScanForward(&r, x);
+  return r;]])
+  string(FIND "${_bitops_src}" "${_ctz_broken}" _ctz_at)
+  if(_ctz_at EQUAL -1)
+    message(FATAL_ERROR "cifra's _WINDOWS count_trailing_zeroes body did not match the expected text; the pinned picotls changed and this patch needs re-checking")
+  endif()
+  string(REPLACE "${_ctz_broken}" "${_ctz_fixed}" _bitops_src "${_bitops_src}")
+  file(WRITE "${_bitops}" "${_bitops_src}")
 endif()
 
 # Probe for cifra's count_trailing_zeroes as bitops.h compiles it on Windows. Built on request
