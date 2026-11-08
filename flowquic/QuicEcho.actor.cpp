@@ -63,13 +63,18 @@ ACTOR Future<Void> quicRecvLoop(Reference<IUDPSocket> sock, PromiseStream<QDatag
 	}
 }
 
-ACTOR Future<Void> quicDriver(Reference<IUDPSocket> sock, QuicEndpoint* ep, FutureStream<QDatagram> in, AsyncTrigger* wake, int which) {
+ACTOR Future<Void> quicDriver(Reference<IUDPSocket> sock,
+                              QuicEndpoint* ep,
+                              FutureStream<QDatagram> in,
+                              AsyncTrigger* wake,
+                              int which) {
 	state QuicAddr local = toQuicAddr(sock->localAddress());
 	state QuicOut out;
 	state int64_t us = 0;
 	loop {
 		while (ep->pull(out)) {
-			int sent = wait(sock->sendTo(out.bytes.data(), out.bytes.data() + out.bytes.size(), toNetworkAddress(out.to)));
+			int sent =
+			    wait(sock->sendTo(out.bytes.data(), out.bytes.data() + out.bytes.size(), toNetworkAddress(out.to)));
 			g_io[which].sendDone++;
 			g_io[which].sendBytes += sent;
 		}
@@ -188,11 +193,17 @@ int main(int argc, char** argv) {
 	QuicResult res;
 	Future<Void> f = quicStopAfter(quicScenario(cfg, &res));
 	g_network->run();
-	std::printf("sockets: client sent %llu (%llu bytes) recv %llu (%llu bytes); server sent %llu (%llu bytes) recv %llu (%llu bytes); non-IPv4 senders dropped: client %llu server %llu\n",
-	            (unsigned long long)g_io[1].sendDone, (unsigned long long)g_io[1].sendBytes,
-	            (unsigned long long)g_io[1].recvDone, (unsigned long long)g_io[1].recvBytes,
-	            (unsigned long long)g_io[0].sendDone, (unsigned long long)g_io[0].sendBytes,
-	            (unsigned long long)g_io[0].recvDone, (unsigned long long)g_io[0].recvBytes,
-	            (unsigned long long)g_io[1].nonV4, (unsigned long long)g_io[0].nonV4);
+	std::printf("sockets: client sent %llu (%llu bytes) recv %llu (%llu bytes); server sent %llu (%llu bytes) recv "
+	            "%llu (%llu bytes); non-IPv4 senders dropped: client %llu server %llu\n",
+	            (unsigned long long)g_io[1].sendDone,
+	            (unsigned long long)g_io[1].sendBytes,
+	            (unsigned long long)g_io[1].recvDone,
+	            (unsigned long long)g_io[1].recvBytes,
+	            (unsigned long long)g_io[0].sendDone,
+	            (unsigned long long)g_io[0].sendBytes,
+	            (unsigned long long)g_io[0].recvDone,
+	            (unsigned long long)g_io[0].recvBytes,
+	            (unsigned long long)g_io[1].nonV4,
+	            (unsigned long long)g_io[0].nonV4);
 	return quicJudge(cfg, res);
 }

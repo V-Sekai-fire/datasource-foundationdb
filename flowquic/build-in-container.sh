@@ -1,5 +1,6 @@
+#!/bin/bash
 set -u
-cd /work/fdbbuild
+cd /work/fdbbuild || exit 1
 export CC=clang CXX=clang++ PYTHONDONTWRITEBYTECODE=1
 cmake -S /src -B . -G Ninja -DFLOWQUIC=ON -DFLOWQUIC_PICOQUIC_DIR=/pq > quic_configure.log 2>&1; echo "configure rc=$?"; grep -E "CMake Error|picotls|Could NOT" -A4 quic_configure.log | head -20
 cmake --build . --target flow_quic_echo --parallel 6 > quic_build.log 2>&1; echo "build rc=$?"; grep -E "error:|FAILED" quic_build.log | head -20; tail -3 quic_build.log
