@@ -24,6 +24,22 @@ else()
   endif()
 endif()
 
+# picotls's own CMake has no Windows handling. Its sources include "wincompat.h" under _WINDOWS, and
+# that header (with wintimeofday.c, the gettimeofday it maps to) lives in picotlsvs/picotls/.
+if(WIN32 AND TARGET picotls-core)
+  get_target_property(_ptls_dir picotls-core SOURCE_DIR)
+  set(_ptls_win "${_ptls_dir}/picotlsvs/picotls")
+  if(NOT EXISTS "${_ptls_win}/wincompat.h")
+    message(FATAL_ERROR "picotls has no ${_ptls_win}/wincompat.h; the pinned picotls changed")
+  endif()
+  target_sources(picotls-core PRIVATE "${_ptls_win}/wintimeofday.c")
+  foreach(_t picotls-core picotls-openssl picotls-minicrypto)
+    if(TARGET ${_t})
+      target_include_directories(${_t} PUBLIC "${_ptls_win}")
+    endif()
+  endforeach()
+endif()
+
 add_flow_target(EXECUTABLE NAME flow_quic_echo SRCS QuicEcho.actor.cpp QuicDriver.cpp)
 target_include_directories(flow_quic_echo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flow_quic_echo PUBLIC flow picohttp-core picoquic-core)

@@ -460,16 +460,23 @@ jobs:
           cmake --version | head -1
           grep -E '^(FLOWQUIC|PKG_CONFIG_EXECUTABLE|OPENSSL_[A-Z_]*|FLOWQUIC_PICOQUIC_TAG|PICOQUIC_FETCH_PTLS|WITH_OPENSSL)[:=]' build/CMakeCache.txt || true
           grep -q '^FLOWQUIC:BOOL=ON' build/CMakeCache.txt || { echo "::error::FLOWQUIC is not ON in the cache"; exit 1; }
-          grep -qiE 'OPENSSL_CRYPTO_LIBRARY[^=]*=.*vcpkg' build/CMakeCache.txt || echo "::warning::OpenSSL did not come from vcpkg; check OPENSSL_* above"
+          grep -q '^OPENSSL_INCLUDE_DIR:PATH=.*vcpkg' build/CMakeCache.txt || { echo "::error::OpenSSL headers did not come from vcpkg"; exit 1; }
+          grep -E 'Found OpenSSL' configure.log
 
-      - name: Build flow_quic_echo
+      # One command per target, none stopping the next, so one run says which of picotls, picoquic
+      # and the driver compile and not only the first that breaks. The step still fails if any did.
+      - name: Build flow_quic_echo, and the libraries under it
         if: matrix.flowquic == 'ON'
         shell: bash
         run: |
-          set +e
-          cmake --build build --config Release --target flow_quic_echo --parallel ${{ matrix.build_jobs }} 2>&1 | tee build-flow_quic_echo.log
-          rc=${PIPESTATUS[0]}
-          grep -iE "error|fatal|Could NOT find|cannot open|unresolved|LNK2038" build-flow_quic_echo.log | head -60
+          rc=0
+          for t in picotls-core picotls-minicrypto picotls-openssl picoquic-core picohttp-core flow_quic_echo; do
+            cmake --build build --config Release --target $t --parallel ${{ matrix.build_jobs }} > "build-$t.log" 2>&1
+            r=$?
+            echo "target $t: exit $r"
+            grep -E "error|fatal|LNK[0-9]+|unresolved" "build-$t.log" | head -20
+            [ $r -eq 0 ] || rc=1
+          done
           exit $rc
 
       - name: Logs
