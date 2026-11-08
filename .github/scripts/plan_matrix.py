@@ -9,11 +9,16 @@ import os
 import sys
 
 ENTRIES = [
+    # build_jobs matched the Windows and macOS runners' own core counts (4 and 3) but was left
+    # at 2 here despite `nproc` also reporting 4 on this runner, measured taking fdbserver from
+    # 34m51s on Windows at --parallel 4 to 1h46m47s here at --parallel 2 on the same dispatch
+    # (run 42451291957). Raised to 4 to match; the "Build fdbserver" step's exit-137 guard below
+    # is what would catch this container running out of memory at the higher parallelism.
     {
         "os": "linux",
         "runner": "ubuntu-latest",
         "container": "foundationdb/build:rockylinux9-latest",
-        "build_jobs": 2,
+        "build_jobs": 4,
     },
     # Apple silicon, so this is the arm64 build. CMAKE_SYSTEM_PROCESSOR is "arm64",
     # not "aarch64", so ConfigureCompiler.cmake:428 does not add -march=armv8.2-a,
