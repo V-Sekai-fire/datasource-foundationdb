@@ -50,14 +50,28 @@ public:
 	static bool should_poll() { return false; }
 	// FIXME: This implementation isn't actually asynchronous - it just does operations synchronously!
 
+	// OPEN_UNBUFFERED is optional here, unlike the Linux/macOS AsyncFileEIO sibling this class
+	// shadows through the Net2AsyncFile macro: FILE_FLAG_NO_BUFFERING, and the alignment rules
+	// it imposes, apply only when the caller asks for it. A caller that passes OPEN_NO_AIO
+	// without OPEN_UNBUFFERED (BackupContainerLocalDirectory's local-disk backup/restore path,
+	// fdbclient/BackupContainerLocalDirectory.actor.cpp) falls through to Net2AsyncFile::open on
+	// every platform; on Linux/macOS that's AsyncFileEIO, which tolerates the missing flag (it
+	// only sets O_DIRECT when OPEN_UNBUFFERED is present, see AsyncFileEIO.actor.h), but on
+	// Windows it used to be this class, which asserted and crashed restore with
+	// "Assertion flags & OPEN_UNBUFFERED failed". Buffered I/O has no offset/length/buffer
+	// alignment requirement, and read()/write()/truncate()/sync() below pass the caller's raw
+	// offset and length straight to boost::asio against the HANDLE with no alignment logic of
+	// their own, so relaxing this to match the Linux/macOS contract is safe.
 	static Future<Reference<IAsyncFile>> open(std::string filename, int flags, int mode, boost::asio::io_service* ios) {
-		ASSERT(flags & OPEN_UNBUFFERED);
-
 		std::string open_filename = filename;
 		if (flags & OPEN_ATOMIC_WRITE_AND_CREATE) {
 			ASSERT((flags & OPEN_CREATE) && (flags & OPEN_READWRITE) && !(flags & OPEN_EXCLUSIVE));
 			open_filename = filename + ".part";
 		}
+
+		DWORD flagsAndAttributes = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED;
+		if (flags & OPEN_UNBUFFERED)
+			flagsAndAttributes |= FILE_FLAG_NO_BUFFERING;
 
 		HANDLE h = CreateFile(open_filename.c_str(),
 		                      GENERIC_READ | ((flags & OPEN_READWRITE) ? GENERIC_WRITE : 0),
@@ -66,7 +80,7 @@ public:
 		                      (flags & OPEN_EXCLUSIVE) ? CREATE_NEW
 		                      : (flags & OPEN_CREATE)  ? OPEN_ALWAYS
 		                                               : OPEN_EXISTING,
-		                      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING,
+		                      flagsAndAttributes,
 		                      nullptr);
 		if (h == INVALID_HANDLE_VALUE) {
 			bool notFound = GetLastError() == ERROR_FILE_NOT_FOUND;
