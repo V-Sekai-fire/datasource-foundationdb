@@ -33,6 +33,9 @@ if(WIN32 AND TARGET picotls-core)
     message(FATAL_ERROR "picotls has no ${_ptls_win}/wincompat.h; the pinned picotls changed")
   endif()
   target_sources(picotls-core PRIVATE "${_ptls_win}/wintimeofday.c")
+  # Force-included into every C file that sees picotls.h; see the header for why.
+  target_compile_options(picotls-core PUBLIC
+    "$<BUILD_INTERFACE:$<$<COMPILE_LANGUAGE:C>:/FI${CMAKE_CURRENT_SOURCE_DIR}/ptls_clangcl_compat.h>>")
   foreach(_t picotls-core picotls-openssl picotls-minicrypto)
     if(TARGET ${_t})
       # BUILD_INTERFACE: the fetched source sits in the build tree, and picotls exports these targets,

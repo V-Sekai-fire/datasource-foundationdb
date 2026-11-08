@@ -469,6 +469,7 @@ jobs:
         if: matrix.flowquic == 'ON'
         shell: bash
         run: |
+          set +e
           rc=0
           for t in picotls-core picotls-minicrypto picotls-openssl picoquic-core picohttp-core flow_quic_echo; do
             cmake --build build --config Release --target $t --parallel ${{ matrix.build_jobs }} > "build-$t.log" 2>&1
