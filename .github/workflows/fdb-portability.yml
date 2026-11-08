@@ -35,7 +35,9 @@ on:
   # Scoped to that one base branch rather than every pull request, because this is three
   # platforms building FoundationDB from source and the cost is real.
   pull_request:
-    branches: [portability-consensus]
+    branches: [portability-consensus, main]
+  # The merge queue builds the PR merged onto the queue's base in a merge_group run.
+  merge_group:
 
 permissions:
   contents: write
@@ -270,15 +272,21 @@ jobs:
         if: matrix.os == 'linux'
         shell: bash
         run: |
-          flags=$(grep -o -- '-ggdb1\?' build/compile_commands.json | sort -u | tr '\n' ' ')
+          # ConfigureCompiler.cmake picks -g1 (minimal), -g2 (Debug) or -g3 (FULL_DEBUG_SYMBOLS). The earlier spelling,
+          # -ggdb1, no longer appears; grep then found nothing and, under pipefail, ended the step before it printed.
+          flags=$(grep -o -E -- '-g[0-9]\b' build/compile_commands.json | sort -u | tr '\n' ' ' || true)
           gz=$(grep -c -- '-gz' build/compile_commands.json || true)
           echo "debug flags in use: ${flags:-none}   -gz occurrences: $gz"
           case "$flags" in
-            *"-ggdb "*|"-ggdb")
-              echo "::error::full debug symbols are on; ConfigureCompiler.cmake:185 was reached, which means FDB_RELEASE is set again"
+            *"-g3"*|*"-g2"*)
+              echo "::error::more than minimal debug symbols are on (-g2 or -g3); ConfigureCompiler.cmake FULL_DEBUG_SYMBOLS or a Debug build type was reached"
+              exit 1 ;;
+            *"-g1"*) ;;
+            *)
+              echo "::error::no -g1 in the compile commands, so the minimal-symbols setting was not applied"
               exit 1 ;;
           esac
-          [ "$gz" -gt 0 ] || { echo "::error::debug sections are not compressed; ConfigureCompiler.cmake:195 was skipped"; exit 1; }
+          [ "$gz" -gt 0 ] || { echo "::error::debug sections are not compressed; COMPRESS_DEBUG_SYMBOLS was off"; exit 1; }
           echo "minimal symbols, compressed"
 
       # Each step stops the job, so a failure names the first thing that broke. --config Release
