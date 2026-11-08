@@ -41,7 +41,7 @@ The `windows-flowquic` entry of `.github/workflows/fdb-portability.yml` configur
 picotls has no Windows handling in its CMake, so `flowquic/CMakeLists.txt` and `flowquic/ptls_clangcl_compat.h` supply it:
 - the include path to `picotlsvs/picotls` (for `wincompat.h`), wrapped in `$<BUILD_INTERFACE:>` because picotls exports its targets;
 - `wintimeofday.c` added to `picotls-core`, since `wincompat.h` maps `gettimeofday` to it;
-- a force-included header that defines `PTLS_BUILD_ASSERT_EXPR` as 1 (`picotls.h` defines it only under `__GNUC__`, which clang-cl does not set; this turns off picotls's compile-time array check) and keeps `__attribute__` (`wincompat.h` empties it, which breaks clang's intrinsic headers);
+- a force-included header that defines `PTLS_BUILD_ASSERT_EXPR` as picotls.h's own GNU definition (`picotls.h` defines it only under `__GNUC__`, which clang-cl does not set, while its array check `PTLS_ELEMENTSOF` is gated on `__clang__`; configure checks that an array is accepted and a pointer is refused) and keeps `__attribute__` (`wincompat.h` empties it, which breaks clang's intrinsic headers);
 - `-Wno-error=incompatible-pointer-types` on `picotls-minicrypto` only, for cifra's `uint32_t*` passed to `_BitScanReverse`.
 `pkgconfiglite` is installed on the runner because picotls requires `FIND_PACKAGE(PkgConfig REQUIRED)`.
 
