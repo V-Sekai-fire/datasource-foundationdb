@@ -83,7 +83,15 @@ public:
 		                      flagsAndAttributes,
 		                      nullptr);
 		if (h == INVALID_HANDLE_VALUE) {
-			bool notFound = GetLastError() == ERROR_FILE_NOT_FOUND;
+			// ERROR_FILE_NOT_FOUND (the leaf itself is missing) and ERROR_PATH_NOT_FOUND (a
+			// parent directory is missing, e.g. opening a file inside a container's subfolder
+			// before that subfolder has ever been created) both mean "not found" on POSIX,
+			// where open() returns the same ENOENT for both and FDB maps it to file_not_found.
+			// Missing the second code here made every first-ever local-directory backup's
+			// writeEncryptionMetadataIfNotExists (BackupContainerFileSystem.actor.cpp) treat a
+			// routine "doesn't exist yet" as a fatal io_error and abort the whole backup task,
+			// since it only swallows file_not_found and rethrows everything else.
+			bool notFound = GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
 			Error e = notFound ? file_not_found() : io_error();
 			TraceEvent(notFound ? SevWarn : SevWarnAlways, "FileOpenError")
 			    .error(e)
